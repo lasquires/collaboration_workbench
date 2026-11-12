@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 BOARD = ROOT / "docs" / "BOARD.md"
+VARIABLE_REGISTRY = ROOT / "analysis" / "variable-occurrences.json"
 START = "<!-- ROADMAP_TASK_RECORDS:START -->"
 END = "<!-- ROADMAP_TASK_RECORDS:END -->"
 _WRITE_LOCK = threading.Lock()
@@ -133,6 +134,46 @@ def snapshot() -> dict:
         "message": "Claims use the shared board task records." if available else
                    "Shared task records are not migrated. Showing board source only; claims are disabled.",
         "tasks": tasks, "board": raw,
+    }
+
+
+def variable_occurrences(query: object = "", exact: object = False) -> dict:
+    """Return a validated read projection; registry and board revisions are independent."""
+    from variable_registry import search_occurrences, validate_registry
+
+    if not isinstance(query, str) or len(query) > 500 or "\x00" in query:
+        raise RoadmapError(400, "Query must be a string of at most 500 characters")
+    if not isinstance(exact, bool):
+        raise RoadmapError(400, "Exact must be a boolean")
+    try:
+        raw = VARIABLE_REGISTRY.read_bytes()
+        document = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
+        raise RoadmapError(503, "Variable registry is unavailable or malformed") from exc
+    errors = validate_registry(document, repo_root=ROOT, board_path=BOARD)
+    if errors:
+        raise RoadmapError(503, "Variable registry failed validation: " + "; ".join(errors))
+
+    rows = (search_occurrences(document, query, exact=exact) if query else
+            list(document["occurrences"]))
+    all_rows = {row["id"]: row for row in document["occurrences"]}
+    wish_ids = {wish_id for row in rows for wish_id in row["wish_ids"]}
+    wishes = [wish for wish in document["task_wishes"] if wish["id"] in wish_ids]
+    leads = [
+        {"source_id": row["id"], "target_id": match["occurrence_id"], "reason": match["reason"]}
+        for row in rows for match in row["possible_matches"]
+        if match["status"] == "lead" and match["occurrence_id"] in all_rows
+    ]
+    _, task_revision, _, _ = _load_board()
+    return {
+        "source": "analysis/variable-occurrences.json",
+        "revision": hashlib.sha256(raw).hexdigest(),
+        "task_revision": task_revision,
+        "query": query,
+        "exact": exact,
+        "occurrences": rows,
+        "task_wishes": wishes,
+        "leads": leads,
     }
 
 
@@ -276,12 +317,51 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self) -> None:
-        if self.path == "/api/tasks":
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/tasks" and not parsed.query:
             try:
                 self._json(200, snapshot())
             except RoadmapError as exc:
                 self._json(exc.status, {"error": str(exc)})
-        elif self.path == "/" or self.path == "/index.html":
+        elif parsed.path == "/api/variable-occurrences":
+            try:
+                params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+                if set(params) - {"query", "exact"} or any(len(values) != 1 for values in params.values()):
+                    raise RoadmapError(400, "Expected at most one query and exact parameter")
+                exact_value = params.get("exact", ["false"])[0]
+                if exact_value not in {"true", "false"}:
+                    raise RoadmapError(400, "Exact must be true or false")
+                self._json(200, variable_occurrences(params.get("query", [""])[0], exact_value == "true"))
+            except RoadmapError as exc:
+                self._json(exc.status, {"error": str(exc)})
+            except ValueError:
+                self._json(400, {"error": "Invalid query string"})
+        elif parsed.path == "/api/graph" and not parsed.query:
+            try:
+                from task_graph import project_tasks
+                tasks = snapshot()
+                graph = project_tasks(tasks["tasks"])
+                graph.update({"source": tasks["source"], "revision": tasks["revision"],
+                              "partial_coverage": True, "claims_available": tasks["claims_available"]})
+                self._json(200, graph)
+            except RoadmapError as exc:
+                self._json(exc.status, {"error": str(exc)})
+            except (TypeError, ValueError) as exc:
+                self._json(503, {"error": f"Task graph projection failed: {exc}"})
+        elif parsed.path == "/graph" and not parsed.query:
+            page = ROOT / "docs" / "task-graph.html"
+            try:
+                body = page.read_bytes()
+            except OSError:
+                self._json(404, {"error": "Task graph page is unavailable"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif parsed.path == "/" or parsed.path == "/index.html":
             page = ROOT / "docs" / "roadmap-dashboard.html"
             body = page.read_bytes()
             self.send_response(200)
