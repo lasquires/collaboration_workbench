@@ -13,6 +13,20 @@ vm.runInNewContext(source, context);
 const model = context.module.exports;
 const plain = value => JSON.parse(JSON.stringify(value));
 
+assert.equal(model.mergePreviewUrl('p /','keep?','old&'),
+  '/v1/tasks/merge-preview?project_id=p+%2F&survivor_id=keep%3F&absorbed_id=old%26');
+const mergeSections = model.mergePreviewSections({survivor_id:'a',absorbed_id:'b',
+  field_conflicts:{title:{survivor:{present:true,value:'<script>bad</script>'},absorbed:{present:false}}},
+  metadata_conflicts:{},proposed_children:[],proposed_links:[],source_union:['source'],
+  claim_conflicts:[],problems:[{kind:'dependency_cycle'}]});
+assert.ok(mergeSections.some(section=>section.lines.some(line=>line.includes('<script>bad</script>'))),
+  'preview formatter keeps untrusted text as data for textContent rendering');
+assert.ok(mergeSections.some(section=>section.lines.some(line=>line.includes('absent'))),
+  'missing fields stay distinct from empty or null values');
+assert.ok(mergeSections.some(section=>section.lines.some(line=>line.includes('dependency cycle'))));
+assert.match(graphHtml, /id="mergePreviewForm"/);
+assert.match(graphHtml, /line\.textContent=text/);
+
 assert.deepEqual(plain(model.outlineRoots({nodes:[
   {id:'focus',parent_id:'outside-page'}, {id:'child',parent_id:'focus'},
   {id:'island',parent_id:null}
