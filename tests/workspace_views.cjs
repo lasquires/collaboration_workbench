@@ -11,6 +11,20 @@ const context = { module: { exports: {} }, globalThis: {}, URLSearchParams };
 vm.runInNewContext(source, context);
 const model = context.module.exports;
 const plain = value => JSON.parse(JSON.stringify(value));
+const editOperation={op:'revise_question',question_id:'q',expected_record_revision:1,
+  text:'My wording',expected_evidence:'My evidence',criteria:{any_of:[{identifier:'x',allow_identifier_only:true}]},rationale:'Reviewed'};
+const currentQuestion={id:'q',record_revision:2,text:'Concurrent wording',expected_evidence:'Current evidence',criteria:{}};
+assert.equal(model.reconcileQuestionRevision(editOperation,currentQuestion,{}),null,
+  'every edited question field requires an explicit conflict choice');
+const revised=model.reconcileQuestionRevision(editOperation,currentQuestion,
+  {text:'draft',expected_evidence:'latest',criteria:'latest'});
+assert.equal(revised.expected_record_revision,2);
+assert.equal(revised.text,'My wording');
+assert.equal(revised.expected_evidence,'Current evidence');
+assert.deepEqual(plain(revised.criteria),{});
+assert.equal(model.reconcileQuestionRevision(editOperation,{...currentQuestion,id:'other'},
+  {text:'draft',expected_evidence:'draft',criteria:'draft'}),null,'cannot reconcile against another question');
+assert.match(html,/id="questionEditForm"/);
 assert.match(html, /<button\b[^>]*\bid="discardDraft"/,
   'the runtime draft-discard handler has an actual control during startup');
 
