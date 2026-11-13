@@ -116,6 +116,13 @@ def main(argv=None):
     read.add_argument("--cursor")
     transaction = sub.add_parser("v1-transaction", help="submit an exact v1 envelope from a UTF-8 JSON file")
     transaction.add_argument("--file", type=Path, required=True)
+    exchange_export = sub.add_parser('exchange-export', help='save a read-only Git exchange bundle to a new JSON file')
+    exchange_export.add_argument('--project', required=True)
+    exchange_export.add_argument('--ancestor', help='previously registered common ancestor snapshot ID')
+    exchange_export.add_argument('--output', type=Path, required=True)
+    exchange_preview = sub.add_parser('exchange-preview', help='preview a bundle without applying changes')
+    exchange_preview.add_argument('--project', required=True)
+    exchange_preview.add_argument('--file', type=Path, required=True)
     variable_import = sub.add_parser("import-variables", help="preview or apply one hash-pinned metadata registry cutover")
     variable_import.add_argument("--file", type=Path, required=True)
     variable_import.add_argument("--project", required=True)
@@ -151,6 +158,24 @@ def main(argv=None):
     journal.add_argument("--request-id")
     args = parser.parse_args(argv)
     try:
+        if args.command == 'exchange-export':
+            params = {'project_id': args.project}
+            if args.ancestor is not None:
+                params['ancestor_id'] = args.ancestor
+            result = request(args.url, '/v1/exchange-export?' + urlencode(params))
+            # Serialize before opening so a bad response cannot leave a partial file.
+            body = json.dumps(result['bundle'], ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + '\n'
+            with args.output.open('x', encoding='utf-8', newline='\n') as output:
+                output.write(body)
+            print(f'Exported bundle to {args.output}')
+            return 0
+        if args.command == 'exchange-preview':
+            bundle = json.loads(args.file.read_text(encoding='utf-8-sig'))
+            if not isinstance(bundle, dict):
+                raise ValueError('Exchange file must contain a bundle object')
+            result = request(args.url, '/v1/exchange-preview', {'project_id': args.project, 'bundle': bundle})
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
         if args.command == "process-jobs":
             caps = request(args.url, '/v1/projects/'+args.project+'/capabilities')
             request_id = args.request_id or str(uuid.uuid4())

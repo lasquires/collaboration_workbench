@@ -1,10 +1,18 @@
 import json
 import threading
 import unittest
+import tempfile
+import contextlib
+import io
+import sys
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 from tools import roadmap_cli
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+import roadmap_server
+from roadmap_store import RoadmapStore
 
 
 class RoadmapCliTests(unittest.TestCase):
@@ -108,6 +116,67 @@ class RoadmapCliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("STALE CONFLICT (409)", str(err.write.call_args_list))
         self.assertEqual(len(self.requests), 1)
+
+    def test_exchange_export_file_is_direct_preview_input(self):
+        bundle = {'id': 'bundle-hash', 'records': {'tasks': []}}
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / 'exchange.json'
+            with patch.object(roadmap_cli, 'request', return_value={'bundle': bundle}) as api:
+                with patch('sys.stdout'):
+                    self.assertEqual(roadmap_cli.main(['exchange-export', '--project', 'project-x',
+                        '--ancestor', 'ancestor / one', '--output', str(output)]), 0)
+                self.assertEqual(api.call_args.args[1],
+                    '/v1/exchange-export?project_id=project-x&ancestor_id=ancestor+%2F+one')
+            self.assertEqual(json.loads(output.read_text(encoding='utf-8')), bundle)
+            with patch.object(roadmap_cli, 'request', return_value={'preview': {}}) as api:
+                with patch('sys.stdout'):
+                    self.assertEqual(roadmap_cli.main(['exchange-preview', '--project', 'project-x',
+                        '--file', str(output)]), 0)
+                self.assertEqual(api.call_args.args[1:], ('/v1/exchange-preview',
+                    {'project_id': 'project-x', 'bundle': bundle}))
+                self.assertEqual(api.call_count, 1, 'preview does not submit a transaction')
+
+    def test_exchange_export_preserves_existing_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / 'exchange.json'
+            output.write_text('precious existing bundle', encoding='utf-8')
+            with patch.object(roadmap_cli, 'request', return_value={'bundle': {}}):
+                with patch('sys.stderr'):
+                    self.assertEqual(roadmap_cli.main(['exchange-export', '--project', 'p',
+                        '--output', str(output)]), 2)
+            self.assertEqual(output.read_text(encoding='utf-8'), 'precious existing bundle')
+
+
+class ExchangeCliHttpTests(unittest.TestCase):
+    def test_real_service_export_preview_preserves_store_and_determinism(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store_path = Path(folder) / 'roadmap.sqlite3'
+            store = RoadmapStore(store_path)
+            store.import_v1([{'id':'task','title':'Unicode evidence α','status':'ready'}], 'a'*64)
+            project = store.read_v1('projects')['items'][0]['id']
+            before = store.snapshot()
+            with patch.object(roadmap_server, 'STORE_PATH', store_path):
+                server = ThreadingHTTPServer(('127.0.0.1', 0), roadmap_server.Handler)
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    base = ['--url', f'http://127.0.0.1:{server.server_port}']
+                    first, second = (Path(folder)/name for name in ('first.json','second.json'))
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        for output in (first, second):
+                            self.assertEqual(roadmap_cli.main(base + ['exchange-export', '--project',
+                                project, '--output', str(output)]), 0)
+                    self.assertEqual(first.read_bytes(), second.read_bytes())
+                    self.assertIn('α', first.read_text(encoding='utf-8'))
+                    with contextlib.redirect_stdout(io.StringIO()) as response:
+                        self.assertEqual(roadmap_cli.main(base + ['exchange-preview', '--project',
+                            project, '--file', str(first)]), 0)
+                    changes = json.loads(response.getvalue())['preview']['changes']
+                    self.assertTrue(changes)
+                    self.assertTrue(all(change['status'] == 'identical' for change in changes))
+                    self.assertEqual(store.snapshot(), before)
+                finally:
+                    server.shutdown(); server.server_close(); worker.join()
 
 
 if __name__ == "__main__":
