@@ -13,6 +13,19 @@ vm.runInNewContext(source, context);
 const model = context.module.exports;
 const plain = value => JSON.parse(JSON.stringify(value));
 
+// Root paging must survive graph rendering, which owns #unplaced.
+const rootPaging = {innerHTML:''}, neighborhoodFooter = {innerHTML:'neighborhood controls'};
+const rootSelect = {value:'root',innerHTML:''};
+const rootRenderScope = {rootItems:[{id:'root',parent_id:null,title:'Root'}],
+  taskCursor:'page-2',focusRoot:'root',esc:value=>value,
+  $:selector=>({'#rootPaging':rootPaging,'#unplaced':neighborhoodFooter,
+    '#rootSelect':rootSelect,'#moreRoots':null})[selector]};
+vm.runInNewContext(source.slice(source.indexOf('function renderRoots()'),
+  source.indexOf('async function expandNeighborhood'))+';renderRoots();', rootRenderScope);
+assert.match(rootPaging.innerHTML,/moreRoots/, 'root pagination owns a persistent toolbar container');
+assert.equal(neighborhoodFooter.innerHTML,'neighborhood controls',
+  'root paging never replaces neighborhood controls');
+
 assert.equal(model.mergePreviewUrl('p /','keep?','old&'),
   '/v1/tasks/merge-preview?project_id=p+%2F&survivor_id=keep%3F&absorbed_id=old%26');
 const mergeSections = model.mergePreviewSections({survivor_id:'a',absorbed_id:'b',
