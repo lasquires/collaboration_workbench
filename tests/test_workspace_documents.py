@@ -41,6 +41,18 @@ class WorkspaceDocumentsTests(unittest.TestCase):
                              'authority_kind':'service_body','body':body})
         return result['id'], result['current_version_id']
 
+    def test_create_response_matches_persisted_document_revision(self):
+        for authority in ('service_body', 'registered_file'):
+            operation = {'op': 'create_document', 'id': authority, 'kind': 'guide',
+                         'title': 'Revision contract', 'authority_kind': authority}
+            if authority == 'service_body':
+                operation['body'] = 'Initial version'
+            result = self.apply(operation)
+            document = next(item for item in self.read('documents')['items']
+                            if item['id'] == result['id'])
+            self.assertEqual(result['record_revision'], document['revision'])
+            self.assertEqual(result.get('current_version_id'), document['current_version_id'])
+
     def test_service_versions_proposals_pinned_comments_and_feedback(self):
         doc, first = self.service_doc()
         quote = 'Original source text.'

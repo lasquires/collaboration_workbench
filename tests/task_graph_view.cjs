@@ -13,6 +13,12 @@ vm.runInNewContext(source, context);
 const model = context.module.exports;
 const plain = value => JSON.parse(JSON.stringify(value));
 
+assert.deepEqual(plain(model.outlineRoots({nodes:[
+  {id:'focus',parent_id:'outside-page'}, {id:'child',parent_id:'focus'},
+  {id:'island',parent_id:null}
+]})).map(node=>node.id), ['focus','island'],
+  'accessible outline includes the visible root of a focused descendant branch');
+
 // Slice 2 model contract: navigation changes only the view, and API progress
 // indicators are derived from source fields rather than task status guesses.
 const workspaceFixture = JSON.parse(fs.readFileSync('tests/fixtures/research_workspace_v1.json', 'utf8'));

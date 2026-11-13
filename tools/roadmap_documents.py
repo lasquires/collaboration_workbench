@@ -137,6 +137,7 @@ def apply_operation(db, project, principal, op, request_id):
             version = _new_version(db, project, principal, doc, op['body'])
             _event(db, project, principal, request_id, 'document_version', version['id'], 'create_document_version', version)
             result['current_version_id'] = version['id']
+            result['record_revision'] = _row(db, 'documents', project, identity)['revision']
         return result
     if kind == 'register_document_version':
         document = _row(db, 'documents', project, op.get('document_id'))
