@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 OPS = {'register_root', 'register_artifact', 'register_artifact_version',
        'create_index_run', 'stage_batch', 'publish_run', 'create_question',
-       'record_negative_search', 'import_variable_registry'}
+       'record_negative_search', 'import_variable_registry', 'revise_question'}
 RESOURCES = {'artifacts', 'artifact-versions', 'index-runs', 'occurrences',
              'observations', 'questions', 'negative-searches', 'findings'}
 
@@ -256,6 +256,42 @@ def apply_operation(db,project,principal,op,request_id):
         db.execute('INSERT INTO questions VALUES(?,?,?,?,?,?,1,?,?,?,NULL)',(identity,project,op.get('owner_task_id'),op.get('area_id'),'open',qrev,principal,now,now))
         db.execute('INSERT INTO question_revisions VALUES(?,?,?,?,?,?,1,1,?,?)',(qrev,project,identity,text(op.get('text'),'question text'),expected,canonical(criteria),principal,now))
         result={'type':'question','id':identity,'record_revision':1}
+    elif kind=='revise_question':
+        question=scoped(db,'questions',project,op.get('question_id'))
+        expected_revision=op.get('expected_record_revision')
+        if type(expected_revision) is not int: error(400,'Question record revision is required')
+        if expected_revision!=question['revision']: error(409,'Question changed; reread and reconcile explicitly')
+        if question['state'] not in ('open','investigating'):
+            error(409,'Reopen the question before revising a resolved or withdrawn question')
+        rationale=text(op.get('rationale'),'revision rationale')
+        previous=scoped(db,'question_revisions',project,question['current_revision_id'])
+        body=text(op.get('text',previous['text']),'question text')
+        expected=optional_text(op.get('expected_evidence',previous['expected_evidence']),'expected evidence',allow_none=False)
+        criteria=op.get('criteria',json.loads(previous['criteria_json']))
+        try:
+            try:
+                from .roadmap_match_rules import validate_criteria
+            except ImportError:
+                from roadmap_match_rules import validate_criteria
+            validate_criteria(criteria,allow_empty=True)
+        except ValueError as exc: error(400,str(exc))
+        criteria_json=canonical(criteria)
+        matching_changed=criteria_json!=previous['criteria_json']
+        editorial_changed=body!=previous['text'] or expected!=previous['expected_evidence']
+        if not matching_changed and not editorial_changed: error(400,'Question revision contains no changes')
+        qrev=str(uuid.uuid4())
+        db.execute('INSERT INTO question_revisions VALUES(?,?,?,?,?,?,?,?,?,?)',
+                   (qrev,project,question['id'],body,expected,criteria_json,
+                    previous['criteria_revision']+int(matching_changed),
+                    previous['presentation_revision']+int(editorial_changed),principal,now))
+        db.execute('UPDATE questions SET current_revision_id=?,revision=revision+1,updated_at=? WHERE project_id=? AND id=?',
+                   (qrev,now,project,question['id']))
+        if matching_changed:
+            db.execute("UPDATE hints SET state='stale' WHERE project_id=? AND question_id=? AND state!='stale'",
+                       (project,question['id']))
+        result={'type':'question','id':question['id'],'record_revision':question['revision']+1,
+                'revision_id':qrev,'previous_revision_id':previous['id'],
+                'matching_changed':matching_changed,'presentation_changed':editorial_changed,'rationale':rationale}
     elif kind=='record_negative_search':
         version=scoped(db,'artifact_versions',project,op.get('artifact_version_id'))
         if not isinstance(op.get('coverage'),dict) or type(op['coverage'].get('complete')) is not bool: error(400,'Search coverage is required')
@@ -267,7 +303,7 @@ def apply_operation(db,project,principal,op,request_id):
         error(400,'Unknown research operation')
     event_id=str(uuid.uuid4())
     cur=db.execute("INSERT INTO workspace_events(id,project_id,request_id,actor_id,entity_type,entity_id,kind,after_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?)",(event_id,project,request_id,principal,result['type'],result['id'],kind,canonical(result),now))
-    if kind in ('publish_run','create_question'):
+    if kind in ('publish_run','create_question') or (kind=='revise_question' and result['matching_changed']):
         db.execute('INSERT INTO research_outbox(id,project_id,event_sequence,kind,payload_json,created_at) VALUES(?,?,?,?,?,?)',(str(uuid.uuid4()),project,cur.lastrowid,kind,canonical(result),now))
     if kind=='import_variable_registry' and not result.get('already_imported'):
         publications=[('publish_run',{'type':'index_run','id':result['run_id']})]

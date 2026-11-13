@@ -363,14 +363,14 @@ def _process_pair(db, project: str, question: sqlite3.Row, candidate_row: sqlite
 
 def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) -> tuple[int, int, bool]:
     payload = json.loads(event["payload_json"])
-    question_id = payload.get("id") if event["kind"] == "create_question" else None
+    question_id = payload.get("id") if event["kind"] in ("create_question", "revise_question") else None
     run_id = None
     finding_revision_id = None
     if event["kind"] == "publish_run":
         run_id = payload.get("id")
     elif event["kind"] == "publish_finding":
         finding_revision_id = payload.get("id")
-    elif event["kind"] != "create_question":
+    elif event["kind"] not in ("create_question", "revise_question"):
         return 0, 0, True
     qcount = _question_count(db, project, question_id=question_id)
     ccount = _candidate_count(db, project, run_id=run_id, finding_revision_id=finding_revision_id)

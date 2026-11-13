@@ -9,6 +9,33 @@ from tools.roadmap_store import RoadmapStore, StoreError
 
 
 class ResearchTests(unittest.TestCase):
+    def test_question_revisions_separate_editorial_and_matching_changes(self):
+        criteria={'any_of':[{'identifier':'speed','namespace':'objc-field','scope_key':'Player'}]}
+        self.write({'op':'create_question','id':'editable','text':'Original question','criteria':criteria})
+        with self.store._connection() as db:
+            original=dict(db.execute("SELECT * FROM question_revisions WHERE question_id='editable'").fetchone())
+            jobs=db.execute('SELECT count(*) FROM research_outbox').fetchone()[0]
+        self.write({'op':'revise_question','question_id':'editable','expected_record_revision':1,
+                    'text':'Clearer question','rationale':'Clarify wording'})
+        question=self.store.read_v1('questions',self.project)['items'][0]
+        self.assertEqual((question['record_revision'],question['criteria_revision'],question['presentation_revision']),(2,1,2))
+        with self.store._connection() as db:
+            self.assertEqual(dict(db.execute('SELECT * FROM question_revisions WHERE id=?',(original['id'],)).fetchone()),original)
+            self.assertEqual(db.execute('SELECT count(*) FROM research_outbox').fetchone()[0],jobs)
+        criteria['any_of'][0]['scope_key']='Ball'
+        self.write({'op':'revise_question','question_id':'editable','expected_record_revision':2,
+                    'criteria':criteria,'rationale':'Different research scope'})
+        question=self.store.read_v1('questions',self.project)['items'][0]
+        self.assertEqual((question['record_revision'],question['criteria_revision'],question['presentation_revision']),(3,2,2))
+        with self.store._connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM research_outbox').fetchone()[0],jobs+1)
+        before=self.store.snapshot()['revision']
+        for operation in ({'expected_record_revision':2,'text':'Stale'},
+                          {'expected_record_revision':3,'criteria':{'any_of':[]}}):
+            with self.assertRaises(StoreError):
+                self.write({'op':'revise_question','question_id':'editable','rationale':'Rejected change',**operation})
+            self.assertEqual(self.store.snapshot()['revision'],before)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

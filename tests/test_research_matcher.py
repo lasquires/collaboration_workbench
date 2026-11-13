@@ -12,6 +12,30 @@ from tools.roadmap_schema import principal_for_label
 
 
 class MatcherTests(unittest.TestCase):
+    def test_question_scope_revision_stales_old_hint_and_retains_decision(self):
+        self.publish(self.source())
+        self.question()
+        self.process()
+        old=self.read_matcher('hints')['items'][0]
+        self.apply({'op':'decide_hint','hint_id':old['id'],'state':'dismissed','reason':'Already checked'})
+        self.write({'op':'revise_question','question_id':'q','expected_record_revision':1,
+                    'text':'Editorial clarification','rationale':'Clarify'})
+        self.assertEqual(self.process()['new_hints'],0)
+        self.assertEqual(len(self.read_matcher('hints')['items']),1)
+        for revision,scope in ((2,'Ball'),(3,'Player')):
+            self.write({'op':'revise_question','question_id':'q','expected_record_revision':revision,
+                        'criteria':{'any_of':[{'identifier':'speed','namespace':'objc-field','scope_key':scope}]},
+                        'rationale':'Review scope '+scope})
+            self.process()
+        hints=self.read_matcher('hints')['items']
+        self.assertEqual(len(hints),2)
+        self.assertEqual(next(item for item in hints if item['id']==old['id'])['state'],'stale')
+        successor=next(item for item in hints if item['id']!=old['id'])
+        self.assertEqual(successor['state'],'dismissed')
+        with self.store._connection() as db:
+            self.assertEqual(db.execute('SELECT state FROM hint_decisions WHERE hint_id=?',(old['id'],)).fetchone()[0],'dismissed')
+            self.assertIsNotNone(db.execute('SELECT carried_from_id FROM hint_decisions WHERE hint_id=?',(successor['id'],)).fetchone()[0])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
