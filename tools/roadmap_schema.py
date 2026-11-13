@@ -7,7 +7,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 FOUNDATION_DDL = [
     "CREATE TABLE projects(id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, goal TEXT NOT NULL DEFAULT '', acceptance_json TEXT NOT NULL DEFAULT '[]', entry_documents_json TEXT NOT NULL DEFAULT '[]', coverage_json TEXT NOT NULL DEFAULT '{}', revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1), created_by TEXT, created_at TEXT, updated_at TEXT, archived_at TEXT)",
@@ -52,7 +52,7 @@ def _migration_checkpoint(db):
     """Fault-injection seam after DDL/backfill, before the migration commits."""
 
 
-def sync_tasks(db, *, project_id=None, before=None):
+def sync_tasks(db, *, project_id=None, before=None, mirror_containment=True):
     """Mirror compatibility structure atomically; keep stable identities untouched."""
     project_id = project_id or default_project(db)
     rows = list(db.execute('SELECT * FROM tasks ORDER BY rowid'))
@@ -67,22 +67,37 @@ def sync_tasks(db, *, project_id=None, before=None):
             if changed:
                 structure = row['parent_id'] != old['parent_id'] or row['archive_reason'] != old['archive_reason']
                 db.execute('UPDATE tasks SET revision=revision+1,structure_revision=structure_revision+?,updated_at=? WHERE id=?', (int(structure),datetime.now(timezone.utc).isoformat(),row['id']))
-    # Requiredness survives legacy edits. Legacy task keys remain the FK envelope.
-    for row in db.execute('SELECT t.*,p.uid AS parent_uid FROM tasks t LEFT JOIN tasks p ON p.id=t.parent_id ORDER BY t.rowid').fetchall():
-        claim = json.loads(row['record_json']).get('claim')
+    if not mirror_containment:
+        for task in db.execute('SELECT project_id,record_json FROM tasks'):
+            claim=json.loads(task['record_json']).get('claim')
+            if claim: principal_for_label(db,task['project_id'],claim['by'])
+        return
+    # Clear changing parents before applying the final forest so valid bulk
+    # moves cannot trip a trigger on a temporary intermediate cycle.
+    mirrored=db.execute('SELECT t.*,p.uid AS parent_uid FROM tasks t LEFT JOIN tasks p ON p.id=t.parent_id ORDER BY t.rowid').fetchall()
+    previous={r['child_id']:dict(r) for r in db.execute('SELECT * FROM containment')}
+    for row in mirrored:
+        old=previous.get(row['uid'])
+        if old is not None and old['parent_id']!=row['parent_uid']:
+            db.execute('UPDATE containment SET parent_id=NULL WHERE child_id=?',(row['uid'],))
+    for row in mirrored:
+        claim=json.loads(row['record_json']).get('claim')
         if claim:
             principal_for_label(db,row['project_id'],claim['by'])
-        previous=db.execute('SELECT parent_id,sibling_order FROM containment WHERE child_id=?',(row['uid'],)).fetchone()
-        if previous is not None and previous['parent_id']==row['parent_uid'] and previous['sibling_order']==row['sibling_order']:
+        old=previous.get(row['uid'])
+        changed=old is None or old['parent_id']!=row['parent_uid'] or old['sibling_order']!=row['sibling_order']
+        if not changed:
             continue
-        db.execute('INSERT INTO containment(project_id,child_id,parent_id,sibling_order) VALUES(?,?,?,?) ON CONFLICT(child_id) DO UPDATE SET parent_id=excluded.parent_id,sibling_order=excluded.sibling_order,revision=containment.revision+CASE WHEN containment.parent_id IS NOT excluded.parent_id OR containment.sibling_order<>excluded.sibling_order THEN 1 ELSE 0 END', (row['project_id'],row['uid'],row['parent_uid'],row['sibling_order']))
+        revision=1 if old is None else old['revision']+1
+        db.execute('INSERT INTO containment(project_id,child_id,parent_id,sibling_order,revision) VALUES(?,?,?,?,?) ON CONFLICT(child_id) DO UPDATE SET parent_id=excluded.parent_id,sibling_order=excluded.sibling_order,revision=excluded.revision', (row['project_id'],row['uid'],row['parent_uid'],row['sibling_order'],revision))
+
 
 
 def migrate(db, *, fresh=False):
     version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return
-    if version not in (1, 2):
+    if version not in (1, 2, 3):
         raise ValueError('Unsupported task database schema')
     db.execute('BEGIN IMMEDIATE')
     try:
@@ -107,12 +122,15 @@ def migrate(db, *, fresh=False):
             principal_for_label(db,project,'local')
             sync_tasks(db,project_id=project)
         try:
-            from . import roadmap_research, roadmap_matcher, roadmap_documents
+            from . import roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_exchange
         except ImportError:
-            import roadmap_research, roadmap_matcher, roadmap_documents
-        roadmap_research.create_schema(db)
-        roadmap_matcher.create_schema(db)
-        roadmap_documents.create_schema(db)
+            import roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_exchange
+        if version <= 2:
+            roadmap_research.create_schema(db)
+            roadmap_matcher.create_schema(db)
+            roadmap_documents.create_schema(db)
+        roadmap_structure.create_schema(db)
+        roadmap_exchange.create_schema(db)
         _migration_checkpoint(db)
         db.execute('UPDATE store_meta SET schema_version=?,revision=revision+?', (SCHEMA_VERSION,0 if fresh else 1))
         if db.execute('PRAGMA foreign_key_check').fetchone():

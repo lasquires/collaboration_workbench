@@ -44,7 +44,8 @@
         "blocked_reason": null,
         "review_required": false,
         "new_hint_count": 0,
-        "archived_children": 0
+        "archived_children": 0,
+        "routing_review_required": false
       },
       "summary": "Synthetic API contract fixture.",
       "owner": null
@@ -84,7 +85,8 @@
         "blocked_reason": null,
         "review_required": true,
         "new_hint_count": 0,
-        "archived_children": 0
+        "archived_children": 0,
+        "routing_review_required": false
       },
       "summary": "Synthetic API contract fixture.",
       "owner": null

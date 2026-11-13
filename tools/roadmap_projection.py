@@ -77,6 +77,16 @@ def progress_projection(db, project_id, task_ids, now):
         children.setdefault(row['parent_id'],[]).append(row['child_id'])
         required[row['child_id']] = bool(row['required_for_parent'])
     result = {}
+    failures={r[0] for r in db.execute("SELECT DISTINCT task_id FROM attempts WHERE project_id=? AND resolution_state='unresolved' AND outcome='failed'",(project_id,))}
+    routing={r[0] for r in db.execute("SELECT task_id FROM attempts WHERE project_id=? AND resolution_state='unresolved' AND outcome IN ('failed','blocked','inconclusive') GROUP BY task_id,boundary_id HAVING COUNT(*)>=2",(project_id,))}
+    parent_uids={r['id']:r['uid'] for r in rows.values()}
+    descendant_failures={uid:set() for uid in rows}
+    for failed in failures:
+        if failed not in rows: continue
+        parent=parent_uids.get(rows[failed]['parent_id']);seen=set()
+        while parent and parent not in seen:
+            seen.add(parent);descendant_failures[parent].add(failed)
+            parent=parent_uids.get(rows[parent]['parent_id'])
     for uid in task_ids:
         if uid not in rows:
             _error(404,'Scoped task not found')
@@ -107,14 +117,21 @@ def progress_projection(db, project_id, task_ids, now):
                 except (ValueError,TypeError):
                     state = 'handoff_needed'
             claim_state = {'state':state,'principal_id':principal[0] if principal else None,'label':claim['by'],'expires_at':expiry}
-        # Structured failed attempts and validation are later slices. Historical
-        # prose is deliberately not inferred to be a structured failure.
+        lease=db.execute('SELECT c.*,p.label FROM claims c JOIN principals p ON p.id=c.principal_id WHERE c.project_id=? AND c.task_id=? AND c.released_at IS NULL',(project_id,uid)).fetchone()
+        if lease and lease['expires_at']:
+            try:
+                live=datetime.fromisoformat(lease['expires_at'].replace('Z','+00:00'))>datetime.fromisoformat(now.replace('Z','+00:00'))
+                claim_state={'state':'live' if live else 'expired','principal_id':lease['principal_id'],'label':lease['label'],'expires_at':lease['expires_at']}
+            except (ValueError,TypeError): pass
+        new_hints=db.execute("SELECT COUNT(*) FROM hints h JOIN questions q ON q.project_id=h.project_id AND q.id=h.question_id WHERE h.project_id=? AND q.owner_task_id=? AND h.state='new'",(project_id,uid)).fetchone()[0]
+        blockers=[r[0] for r in db.execute('SELECT reason FROM task_blockers WHERE project_id=? AND task_id=? AND resolved_at IS NULL ORDER BY created_at,id',(project_id,uid))]
         result[uid] = {**buckets,'decomposition_complete':bool(row['decomposition_complete']),
-                       'own_acceptance':row['acceptance_state'],'unresolved_failure':False,
-                       'failed_descendant_tasks':0,'claim':claim_state,
-                       'blocked_reason':record.get('blocked_reason') or (record.get('next_step') if record['status']=='blocked' else None),
+                       'own_acceptance':row['acceptance_state'],'unresolved_failure':uid in failures,
+                       'failed_descendant_tasks':len(descendant_failures[uid]),'claim':claim_state,
+                       'routing_review_required':uid in routing,
+                       'blocked_reason':'; '.join(blockers) or record.get('blocked_reason') or (record.get('next_step') if record['status']=='blocked' else None),
                        'review_required':record['status']=='review' or claim_state['state'] in ('expired','handoff_needed') or (record['status']=='done' and row['acceptance_state']!='passed'),
-                       'new_hint_count':0,'archived_children':archived}
+                       'new_hint_count':new_hints,'archived_children':archived}
     return result
 
 
@@ -250,9 +267,27 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
         record=json.loads(row['record_json'])
         dependencies=[{'id':by_legacy[link['target_id']]['uid'],'alias':link['target_id'],'kind':link['kind'],'rationale':link['rationale'],'review_state':link['review_state']} for link in db.execute("SELECT * FROM task_links WHERE source_id=? AND kind='depends_on' ORDER BY target_id",(row['id'],)) if link['target_id'] in by_legacy]
         history_response=read_projection(db,'history',project_id,key=uid,limit=LIMITS['history_items'],now=now)
-        omitted=['findings','hints','validation','structured_attempts']
+        validation=None
+        if row['validation_id']:
+            found=db.execute('SELECT * FROM validation_records WHERE project_id=? AND id=?',(project_id,row['validation_id'])).fetchone()
+            if found:
+                validation=dict(found)
+                for name in ('inputs','outputs','evidence'): validation[name]=json.loads(validation.pop(name+'_json'))
+                validation['current']=validation['gate_revision']==row['gate_revision'] and row['acceptance_state']=='passed'
+        try:
+            from . import roadmap_structure
+        except ImportError:
+            import roadmap_structure
+        attempt_page=roadmap_structure.read(db,'attempts',project_id,task_id=uid,limit=50,order='desc')
+        blocker_page=roadmap_structure.read(db,'blockers',project_id,task_id=uid,limit=50,order='desc',state='open')
+        attempts=attempt_page['items'];typed_blockers=blocker_page['items']
+        omitted=['findings','hints']
+        if attempt_page['next_cursor']: omitted.append('structured_attempts')
+        if blocker_page['next_cursor']: omitted.append('blockers')
         if history_response['next_cursor']:omitted.append('history')
         section_cursors={'history':{'path':'/v1/tasks/'+uid+'/history','cursor':history_response['next_cursor'],'limit':LIMITS['history_items']}} if history_response['next_cursor'] else {}
-        context={'task':_task(row,rows,progress),'fields':{k:v for k,v in record.items() if k!='id'},'instructions':instructions,'ancestors':ancestors,'acceptance':record.get('acceptance'),'acceptance_state':row['acceptance_state'],'dependencies':dependencies,'blockers':record.get('blockers',[]),'reservations':record.get('reserved_paths',[]),'validation':None,'findings':[],'hints':[],'progress':progress[uid],'history':history_response['items'], 'event_cursor':event_cursor,'omitted_sections':omitted,'section_cursors':section_cursors}
+        if attempt_page['next_cursor']: section_cursors['structured_attempts']={'path':'/v1/attempts','task_id':uid,'limit':50,'order':'desc','cursor':attempt_page['next_cursor']}
+        if blocker_page['next_cursor']: section_cursors['blockers']={'path':'/v1/blockers','task_id':uid,'limit':50,'order':'desc','state':'open','cursor':blocker_page['next_cursor']}
+        context={'task':_task(row,rows,progress),'fields':{k:v for k,v in record.items() if k!='id'},'instructions':instructions,'ancestors':ancestors,'acceptance':record.get('acceptance'),'acceptance_state':row['acceptance_state'],'gate_revision':row['gate_revision'],'dependencies':dependencies,'blockers':typed_blockers[:50]+record.get('blockers',[]),'reservations':record.get('reserved_paths',[]),'validation':validation,'structured_attempts':attempts[:50],'findings':[],'hints':[],'progress':progress[uid],'history':history_response['items'], 'event_cursor':event_cursor,'omitted_sections':omitted,'section_cursors':section_cursors}
         return {**envelope,'context':context,'event_cursor':event_cursor}
     _error(404,'Unknown workspace resource')

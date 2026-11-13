@@ -47,7 +47,8 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(context['progress']['claim']['state'], 'handoff_needed')
         self.assertEqual(context['reservations'], ['web/owned.js'])
         self.assertEqual(context['findings'], [])
-        self.assertIn('validation', context['omitted_sections'])
+        self.assertIsNone(context['validation'])
+        self.assertNotIn('validation', context['omitted_sections'])
         before = self.store.snapshot()
         for _ in range(2):
             self.store = RoadmapStore(self.path)
@@ -295,6 +296,23 @@ class FoundationHttpTests(unittest.TestCase):
         self.assertEqual(status,200);self.assertEqual(hood['nodes'][0]['title'],'HTTP changed')
         status,legacy=self.request('/api/tasks')
         self.assertEqual(status,200);self.assertEqual(legacy['tasks'][0]['id'],'HTTP')
+
+    def test_scoped_collaboration_reads_and_exchange_previews_are_read_only(self):
+        _,projects=self.request('/v1/projects')
+        project=projects['items'][0]['id']
+        revision=projects['revision']
+        for resource in ('attempts','validations','blockers','claims'):
+            status,result=self.request('/v1/'+resource+'?project_id='+project+'&task_id=HTTP')
+            self.assertEqual(status,200,result)
+            self.assertEqual(result['items'],[])
+        status,export=self.request('/v1/exchange-export?project_id='+project)
+        self.assertEqual(status,200,export)
+        self.assertEqual(export['bundle']['project_id'],project)
+        status,preview=self.request('/v1/exchange-preview',{'project_id':project,'bundle':export['bundle']})
+        self.assertEqual(status,200,preview)
+        self.assertTrue(all(c['status']=='identical' for c in preview['preview']['changes']))
+        _,after=self.request('/v1/projects')
+        self.assertEqual(after['revision'],revision)
 
 
 if __name__ == '__main__':

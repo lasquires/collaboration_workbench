@@ -17,9 +17,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents
+    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure
 except ImportError:
-    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents
+    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure
 
 SCHEMA_VERSION = 1
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
@@ -309,6 +309,7 @@ class RoadmapStore:
                                  for i, child in reversed(list(enumerate(children))))
                 self._validate(tasks, links)
                 self._write_state(db, tasks, links)
+                roadmap_structure.sync_legacy_claims(db,historical=True)
                 request_id = "migration:" + source_sha256
                 self._event(db, request_id, None, None, "migration", {"source_sha256": source_sha256, "ids": list(tasks)})
                 for task in tasks.values():
@@ -387,14 +388,14 @@ class RoadmapStore:
             result.append((_path(path).casefold(), directory))
         return result
 
-    def _write_state(self, db, tasks, links, project_id=None):
+    def _write_state(self, db, tasks, links, project_id=None, mirror_containment=True):
         for t in tasks.values():
             db.execute("INSERT INTO tasks(id,parent_id,sibling_order,record_json,original_json,source_path_json,archive_reason) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,sibling_order=excluded.sibling_order,record_json=excluded.record_json,archive_reason=excluded.archive_reason",
                        (t["id"], t["parent_id"], t["sibling_order"], _json(t["record"]),
                         _json(t["original_record"]), _json(t["source_path"]) if t["source_path"] is not None else None, t["archive_reason"]))
         db.execute("DELETE FROM task_links")
         db.executemany("INSERT INTO task_links VALUES(:source_id,:target_id,:kind,:rationale,:review_state)", links)
-        roadmap_schema.sync_tasks(db, project_id=project_id)
+        roadmap_schema.sync_tasks(db, project_id=project_id, mirror_containment=mirror_containment)
 
     @staticmethod
     def _actor(actor):
@@ -414,6 +415,8 @@ class RoadmapStore:
                     return roadmap_matcher.read(db, resource, project_id, **options)
                 if resource in roadmap_documents.RESOURCES:
                     return roadmap_documents.read(db, resource, project_id, **options)
+                if resource in roadmap_structure.RESOURCES:
+                    return roadmap_structure.read(db, resource, project_id, **options)
                 return roadmap_projection.read_projection(db, resource, project_id, **options)
             finally:
                 db.rollback()
@@ -462,6 +465,23 @@ class RoadmapStore:
             finally:
                 db.rollback()
 
+    def exchange_preview(self, project_id, bundle=None, ancestor_id=None):
+        try:
+            from . import roadmap_exchange
+        except ImportError:
+            import roadmap_exchange
+        with self._connection() as db:
+            db.execute('BEGIN')
+            try:
+                roadmap_projection._coverage(db,project_id)
+                envelope={'api_version':roadmap_projection.API_VERSION,'project_id':project_id,
+                          'revision':self._revision(self._meta(db))}
+                if bundle is None:
+                    return {**envelope,'bundle':roadmap_exchange.export_bundle(db,project_id,ancestor_id)}
+                return {**envelope,'preview':roadmap_exchange.preview_import(db,project_id,bundle)}
+            finally:
+                db.rollback()
+
     def transact_v1(self, payload):
         """Scoped adapter, retaining the existing single global CAS transaction."""
         required = {"project_id", "actor", "request_id", "expected_revision", "operations"}
@@ -501,6 +521,13 @@ class RoadmapStore:
             for op in operations:
                 if not isinstance(op, dict):
                     raise StoreError(400, "Invalid operation")
+                if op.get('op') == 'create_task':
+                    op['op'] = 'create'
+                if op.get('op') in roadmap_structure.OPS:
+                    for field in ('task_id','parent_id'):
+                        if isinstance(op.get(field),str) and op[field] in local_creates:
+                            op[field] = local_creates[op[field]]
+                    continue
                 if op.get("op") in roadmap_research.OPS | roadmap_matcher.OPS | roadmap_documents.OPS | {"process_jobs"}:
                     continue
                 if op.get("op") == "create":
@@ -566,10 +593,28 @@ class RoadmapStore:
                     raise StoreError(409, "Task revision changed; reread and reconcile")
                 tasks, links = self._state(db)
                 before = _copy(tasks)
+                metadata_before = {row['uid']:dict(row) for row in db.execute('SELECT * FROM tasks')}
+                structure_ids = set()
+                validated_tasks = set()
                 event_data = []
                 research_changes = []
                 task_operations = []
                 for operation in operations:
+                    if _workspace and isinstance(operation,dict) and operation.get('op') in roadmap_structure.OPS:
+                        project = _workspace['payload']['project_id']
+                        principal = _workspace['payload']['actor']['principal_id']
+                        self._write_state(db,tasks,links,project_id=project,mirror_containment=False)
+                        roadmap_structure.sync_legacy_claims(db)
+                        change = roadmap_structure.apply_operation(db,project,principal,operation,request_id)
+                        tasks,links = self._state(db)
+                        structure_ids.update(change.pop('structure_task_ids',[]))
+                        change.pop('changed_task_ids',None)
+                        event = change.pop('event')
+                        event_data.append((change['legacy_id'],operation['op'],event))
+                        if operation['op']=='complete_task':
+                            validated_tasks.add(change['legacy_id'])
+                        research_changes.append(change)
+                        continue
                     if _workspace and isinstance(operation, dict) and operation.get("op") in roadmap_research.OPS | roadmap_matcher.OPS | roadmap_documents.OPS | {"process_jobs"}:
                         project = _workspace["payload"]["project_id"]
                         principal = _workspace["payload"]["actor"]["principal_id"]
@@ -596,7 +641,7 @@ class RoadmapStore:
                             raise StoreError(400, "Correction must reference an existing event on the same task")
                     event_data.append(self._operate(tasks, links, operation, actor))
                 self._validate(tasks, links)
-                self._gates(before, tasks, links, task_operations)
+                self._gates(before, tasks, links, task_operations, validated_tasks=validated_tasks)
                 self._write_state(db, tasks, links, project_id=_workspace["payload"]["project_id"] if _workspace else None)
                 if _workspace:
                     project = _workspace["payload"]["project_id"]
@@ -605,6 +650,34 @@ class RoadmapStore:
                         if alias != legacy:
                             db.execute("INSERT INTO entity_aliases VALUES(?,'task',?,?)", (project, alias, row["uid"]))
                 roadmap_schema.sync_tasks(db, before=before)
+                # Parent guards cover aggregate scope, not only edits to the
+                # parent's own text. Detect legacy and typed containment edits.
+                for key,task in tasks.items():
+                    old=before.get(key)
+                    if old is None or old['parent_id']!=task['parent_id'] or old['archive_reason']!=task['archive_reason']:
+                        parents={task['parent_id'],old['parent_id'] if old else None}
+                        for parent in parents:
+                            seen=set()
+                            while parent is not None and parent not in seen:
+                                seen.add(parent)
+                                uid=db.execute('SELECT uid FROM tasks WHERE id=?',(parent,)).fetchone()[0]
+                                structure_ids.add(uid)
+                                parent=tasks[parent]['parent_id']
+                    if old and any(old['record'].get(field)!=task['record'].get(field) for field in ('acceptance','parent_gate')):
+                        uid=db.execute('SELECT uid FROM tasks WHERE id=?',(key,)).fetchone()[0]
+                        roadmap_structure.invalidate_gate(db,uid)
+                for uid in structure_ids:
+                    old=metadata_before.get(uid)
+                    if old:
+                        db.execute('UPDATE tasks SET structure_revision=? WHERE uid=?',(old['structure_revision']+1,uid))
+                        row=db.execute('SELECT gate_revision FROM tasks WHERE uid=?',(uid,)).fetchone()
+                        if row['gate_revision']==old['gate_revision']:
+                            roadmap_structure.invalidate_gate(db,uid)
+                for row in db.execute('SELECT * FROM tasks').fetchall():
+                    old=metadata_before.get(row['uid'])
+                    if old and row['revision']==old['revision'] and any(row[field]!=old[field] for field in ('gate_revision','acceptance_state','validation_id','decomposition_complete','area_id','structure_revision','archived_at')):
+                        db.execute('UPDATE tasks SET revision=revision+1 WHERE uid=?',(row['uid'],))
+                roadmap_structure.sync_legacy_claims(db)
                 recorded_at = datetime.now(timezone.utc).isoformat()
                 for task_id in set(tasks) - set(before):
                     row = db.execute("SELECT project_id FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -739,7 +812,7 @@ class RoadmapStore:
         links.extend({"source_id": task_id, "target_id": d, "kind": "depends_on", "rationale": "", "review_state": "unreviewed"} for d in dependencies)
 
     @staticmethod
-    def _gates(before, after, links, operations):
+    def _gates(before, after, links, operations, *, validated_tasks=()):
         for task_id, task in after.items():
             old = before.get(task_id)
             record = task["record"]
@@ -748,7 +821,7 @@ class RoadmapStore:
                 changed = {k for k in set(record) | set(old["record"] if old else {})
                            if record.get(k) != (old["record"].get(k) if old else None)}
                 if old is None or changed - {"claim", "reserved_paths", "owner"}:
-                    if record.get("acceptance_gate_passed") is not True or not record.get("evidence"):
+                    if task_id not in validated_tasks and (record.get("acceptance_gate_passed") is not True or not record.get("evidence")):
                         raise StoreError(409, "Completion requires this task's passed gate and evidence")
                     if old and old["record"]["status"] == "done" and changed & {"acceptance", "parent_gate"}:
                         raise StoreError(409, "Reopen task before changing completed acceptance")
