@@ -14,7 +14,8 @@ except ImportError:
 
 OPS={'move_task','attach_child','detach_child','archive_task','reopen_task',
      'claim_task','heartbeat_claim','handoff_claim','release_claim','record_attempt',
-     'resolve_attempt','record_validation','complete_task','set_task_scope','record_blocker','resolve_blocker'}
+     'resolve_attempt','record_validation','complete_task','set_task_scope','record_blocker','resolve_blocker',
+     'merge_tasks','reverse_merge'}
 RESOURCES={'attempts','validations','blockers','claims'}
 
 
@@ -165,9 +166,6 @@ def preview_merge(db,project,survivor_id,absorbed_id):
     for row in (survivor,absorbed):
         if row['archive_reason'] is not None:
             problems.append({'kind':'archived_task','task_id':row['uid']})
-    for row in affected.values():
-        if json.loads(row['record_json'])['status']=='done':
-            problems.append({'kind':'completed_scope','task_id':row['uid'],'reason':'Reopen affected completed scope before merging'})
     redirects=[dict(row) for row in db.execute(
         'SELECT * FROM task_redirects WHERE project_id=? AND active=1 AND (absorbed_id IN (?,?) OR survivor_id IN (?,?)) ORDER BY absorbed_id,merge_id',
         (project,*sorted(pair),*sorted(pair)))]
@@ -207,6 +205,9 @@ def preview_merge(db,project,survivor_id,absorbed_id):
             incoming[target]-=1
             if incoming[target]==0: ready.append(target)
     if visited!=len(dependencies): problems.append({'kind':'dependency_cycle'})
+    for row in affected.values():
+        if json.loads(row['record_json'])['status']=='done':
+            problems.append({'kind':'completed_scope','task_id':row['uid'],'reason':'Reopen affected completed scope before merging'})
     metadata=['acceptance_state','validation_id','gate_revision','decomposition_complete','area_id']
     snapshot={'tasks':sorted(affected.values(),key=lambda row:row['uid']),
               'children':children,'links':all_links,'claims':claims,'redirects':redirects}
@@ -222,7 +223,137 @@ def preview_merge(db,project,survivor_id,absorbed_id):
             'original_links':links,'proposed_links':list(proposed.values()),
             'claim_conflicts':claims,'problems':problems,
             'redirect':{'from':absorbed['uid'],'to':survivor['uid']},
-            'acceptance_requires_review':True,'apply_available':False}
+            'acceptance_requires_review':True,'apply_available':not problems and not claims}
+
+
+def redirect_group(db,project,uid):
+    result={uid};pending=[uid]
+    while pending:
+        for row in db.execute('SELECT absorbed_id FROM task_redirects WHERE project_id=? AND survivor_id=? AND active=1',(project,pending.pop())):
+            if row[0] not in result: result.add(row[0]);pending.append(row[0])
+    return sorted(result)
+
+
+def _merge_snapshot(db,project,task_ids,pair):
+    tasks=[dict(task_row(db,project,uid)) for uid in sorted(task_ids)]
+    legacy=[task_row(db,project,uid)['id'] for uid in pair]
+    marks=','.join('?' for _ in task_ids)
+    snapshot={'tasks':tasks,'links':[dict(row) for row in db.execute(
+        'SELECT * FROM task_links WHERE source_id IN (?,?) OR target_id IN (?,?) ORDER BY source_id,target_id,kind',(*legacy,*legacy))]}
+    for table in ('claims','attempts','validation_records','task_blockers'):
+        snapshot[table]=[dict(row) for row in db.execute(f'SELECT * FROM {table} WHERE project_id=? AND task_id IN ({marks}) ORDER BY id',(project,*sorted(task_ids)))]
+    snapshot['containment']=[dict(row) for row in db.execute(f'SELECT * FROM containment WHERE project_id=? AND child_id IN ({marks}) ORDER BY child_id',(project,*sorted(task_ids)))]
+    return snapshot
+
+
+def finalize_merges(db,request_id):
+    for merge in db.execute('SELECT * FROM merge_records WHERE reversed_by IS NULL').fetchall():
+        marker=json.loads(merge['touched_revisions_json'])
+        if marker.get('pending_request')!=request_id: continue
+        after=_merge_snapshot(db,merge['project_id'],marker['task_ids'],(merge['survivor_id'],merge['absorbed_id']))
+        revisions={row['uid']:row['revision'] for row in after['tasks']}
+        db.execute('UPDATE merge_records SET after_json=?,touched_revisions_json=? WHERE project_id=? AND id=?',
+                   (research.canonical(after),research.canonical(revisions),merge['project_id'],merge['id']))
+
+
+def preview_merge_reversal(db,project,merge_id):
+    merge=research.scoped(db,'merge_records',project,merge_id)
+    after=json.loads(merge['after_json']);before=json.loads(merge['before_json'])
+    current=_merge_snapshot(db,project,[row['uid'] for row in after['tasks']],(merge['survivor_id'],merge['absorbed_id']))
+    can_reverse=merge['reversed_by'] is None and current==after
+    return {'merge_id':merge['id'],'survivor_id':merge['survivor_id'],'absorbed_id':merge['absorbed_id'],
+            'guard_digest':research.digest(current),'can_reverse':can_reverse,
+            'reversed_by':merge['reversed_by'],
+            'compensating_preview':None if can_reverse else {'original':before,'expected_after':after,'current':current,
+                'reason':'Intervening edits require an explicit new compensating plan; automatic reversal would overwrite work'}}
+
+
+def _apply_merge(db,project,principal,op,request_id,row,rationale):
+    kind=op['op'];current=now().isoformat()
+    if kind=='reverse_merge':
+        merge=research.scoped(db,'merge_records',project,op.get('merge_id'))
+        if merge['survivor_id']!=row['uid']: research.error(400,'Reversal task must be the merge survivor')
+        preview=preview_merge_reversal(db,project,merge['id'])
+        if not preview['can_reverse'] or preview['guard_digest']!=op.get('preview_guard'):
+            research.error(409,'Merge reversal conflicts with current state; inspect reversal preview and plan compensation')
+        before=json.loads(merge['before_json']);pair=(merge['survivor_id'],merge['absorbed_id'])
+        after_rows={item['uid']:item for item in json.loads(merge['after_json'])['tasks']}
+        restore_tasks=[item for item in before['tasks'] if item!=after_rows[item['uid']]]
+        legacy=[task_row(db,project,uid)['id'] for uid in pair]
+        db.execute('DELETE FROM task_links WHERE source_id IN (?,?) OR target_id IN (?,?)',(*legacy,*legacy))
+        for link in before['links']:
+            db.execute('INSERT INTO task_links VALUES(?,?,?,?,?)',tuple(link[key] for key in ('source_id','target_id','kind','rationale','review_state')))
+        # Clear temporary containment before restoring the exact original forest.
+        for old in restore_tasks: db.execute('UPDATE tasks SET parent_id=NULL WHERE uid=?',(old['uid'],))
+        for old in restore_tasks:
+            columns=['record_json','parent_id','sibling_order','archive_reason','archived_at','area_id','decomposition_complete']
+            db.execute('UPDATE tasks SET '+','.join(key+'=?' for key in columns)+',updated_at=? WHERE uid=?',
+                       (*[old[key] for key in columns],current,old['uid']))
+        for edge in before['containment']:
+            db.execute('UPDATE containment SET required_for_parent=? WHERE project_id=? AND child_id=?',
+                       (edge['required_for_parent'],project,edge['child_id']))
+        db.execute('UPDATE task_redirects SET active=0 WHERE project_id=? AND merge_id=?',(project,merge['id']))
+        db.execute('UPDATE merge_records SET reversed_by=? WHERE project_id=? AND id=?',(request_id,project,merge['id']))
+        touched={old['uid'] for old in restore_tasks}
+        for uid in touched: invalidate_gate(db,uid)
+        return {'type':'task','id':row['uid'],'legacy_id':row['id'],'merge_id':merge['id'],
+                'changed_task_ids':sorted(touched),'structure_task_ids':sorted(touched),
+                'event':{'rationale':rationale,'merge_id':merge['id'],'restored_scope':before,'acceptance_requires_review':True}}
+    absorbed=task_row(db,project,op.get('absorbed_id'))
+    preview=preview_merge(db,project,row['uid'],absorbed['uid'])
+    if preview['guard_digest']!=op.get('preview_guard'): research.error(409,'Merge preview changed; reread and reconcile explicitly')
+    if preview['claim_conflicts']: research.error(409,'Release or hand off claims explicitly before merging')
+    if preview['problems']: research.error(409,'Resolve preview problems before merging')
+    sources=op.get('source_references')
+    if not isinstance(sources,list) or not sources or len(sources)>100: research.error(400,'Merge requires explanation source references')
+    for source in sources: research.text(source,'merge source reference',4000)
+    choices=op.get('choices');metadata=op.get('metadata_choices')
+    for supplied,conflicts in ((choices,preview['field_conflicts']),(metadata,preview['metadata_conflicts'])):
+        if not isinstance(supplied,dict) or set(supplied)!=set(conflicts) or any(value not in ('survivor','absorbed') for value in supplied.values()):
+            research.error(400,'Choose a side explicitly for every conflicting field')
+    touched=set(preview['guards']);pair=(row['uid'],absorbed['uid'])
+    before=_merge_snapshot(db,project,touched,pair)
+    record=json.loads(row['record_json'])
+    for key,choice in choices.items():
+        selected=preview['field_conflicts'][key][choice]
+        if selected['present']: record[key]=selected['value']
+        else: record.pop(key,None)
+    record['id']=row['id'];record['evidence']=preview['source_union'];record['acceptance_gate_passed']=False
+    record['status']='review'
+    db.execute('UPDATE tasks SET record_json=?,decomposition_complete=0,updated_at=? WHERE uid=?',(research.canonical(record),current,row['uid']))
+    for key,choice in metadata.items():
+        if key=='area_id': db.execute('UPDATE tasks SET area_id=? WHERE uid=?',(preview['metadata_conflicts'][key][choice],row['uid']))
+    for edge in preview['proposed_children']:
+        if any(original['child_id']==edge['child_id'] and original['parent_id']==absorbed['uid'] for original in before['containment']):
+            db.execute('UPDATE tasks SET parent_id=?,updated_at=? WHERE uid=?',(row['id'],current,edge['child_id']))
+    # Detach archived source so it cannot keep a required child slot outstanding.
+    db.execute('UPDATE tasks SET parent_id=NULL,archive_reason=?,archived_at=?,updated_at=? WHERE uid=?',
+               ('Merged into '+row['uid']+': '+rationale,current,current,absorbed['uid']))
+    legacy=(row['id'],absorbed['id'])
+    db.execute('DELETE FROM task_links WHERE source_id IN (?,?) OR target_id IN (?,?)',(*legacy,*legacy))
+    for edge in preview['proposed_links']:
+        provenance=edge['provenance']
+        db.execute('INSERT INTO task_links VALUES(?,?,?,?,?)',(edge['source_id'],edge['target_id'],edge['kind'],
+                   '\n'.join(dict.fromkeys(link['rationale'] for link in provenance)),
+                   provenance[0]['review_state'] if len({link['review_state'] for link in provenance})==1 else 'unreviewed'))
+    dependency_changes=set()
+    for source_id in ({edge['source_id'] for edge in preview['original_links'] if edge['kind']=='depends_on'}|{row['id']})-{absorbed['id']}:
+        source=task_row(db,project,source_id);source_record=json.loads(source['record_json'])
+        targets=[link[0] for link in db.execute("SELECT target_id FROM task_links WHERE source_id=? AND kind='depends_on' ORDER BY target_id",(source_id,))]
+        if sorted(source_record.get('dependencies',[]))!=targets:
+            source_record['dependencies']=targets;dependency_changes.add(source['uid'])
+            db.execute('UPDATE tasks SET record_json=?,updated_at=? WHERE uid=?',(research.canonical(source_record),current,source['uid']))
+    identity=str(uuid.uuid4())
+    db.execute('INSERT INTO merge_records VALUES(?,?,?,?,?,?,?,?,?,?)',
+               (identity,project,row['uid'],absorbed['uid'],research.canonical(before),'{}',
+                research.canonical({'pending_request':request_id,'task_ids':sorted(touched)}),None,principal,current))
+    db.execute('INSERT INTO task_redirects VALUES(?,?,?,?,1)',(project,absorbed['uid'],row['uid'],identity))
+    mutated=dependency_changes|{row['uid'],absorbed['uid']}|{edge['child_id'] for edge in before['containment'] if edge['parent_id']==absorbed['uid']}
+    for uid in mutated: invalidate_gate(db,uid)
+    return {'type':'task','id':row['uid'],'legacy_id':row['id'],'merge_id':identity,
+            'changed_task_ids':sorted(mutated),'structure_task_ids':sorted(mutated),
+            'event':{'rationale':rationale,'source_references':sources,'merge_id':identity,'before':before,
+                     'choices':choices,'metadata_choices':metadata,'proposed_links':preview['proposed_links']}}
 
 
 def parent_guards(db,project,parent_ids,op):
@@ -259,6 +390,8 @@ def apply_operation(db,project,principal,op,request_id):
     rationale=research.text(op.get('rationale'),'operation rationale')
     caps=_caps(db,project,principal)
     kind=op['op']; record=json.loads(row['record_json']); before=dict(row)
+    if kind in ('merge_tasks','reverse_merge'): return _apply_merge(db,project,principal,op,request_id,row,rationale)
+    if db.execute('SELECT 1 FROM task_redirects WHERE project_id=? AND absorbed_id=? AND active=1',(project,row['uid'])).fetchone(): research.error(409,'Task was merged; use its survivor or reverse the merge')
     changed={row['uid']}; structure=set(); current=now().isoformat()
     if row['archive_reason'] is not None and kind not in ('reopen_task','resolve_attempt','release_claim'):
         research.error(409,'Reopen archived task before editing it')
@@ -342,7 +475,7 @@ def apply_operation(db,project,principal,op,request_id):
         if outcome!='passed': invalidate_gate(db,row['uid'])
     elif kind=='resolve_attempt':
         attempt=research.scoped(db,'attempts',project,op.get('attempt_id'))
-        if attempt['task_id']!=row['uid']: research.error(404,'Attempt does not belong to this task')
+        if attempt['task_id'] not in redirect_group(db,project,row['uid']): research.error(404,'Attempt does not belong to this task')
         db.execute("UPDATE attempts SET resolution_state='resolved',resolved_at=?,resolution_reason=? WHERE project_id=? AND id=?",(current,rationale,project,attempt['id']))
     elif kind=='record_validation':
         if 'review' not in caps: research.error(403,'Independent review capability is required')
@@ -368,7 +501,8 @@ def apply_operation(db,project,principal,op,request_id):
         for child in children:
             if child['required_for_parent'] and (child['archive_reason'] is not None or json.loads(child['record_json'])['status']!='done' or child['acceptance_state']!='passed'):
                 research.error(409,'Required child scope has not passed its own acceptance')
-        if db.execute("SELECT 1 FROM attempts WHERE project_id=? AND task_id=? AND resolution_state='unresolved'",(project,row['uid'])).fetchone() or db.execute('SELECT 1 FROM task_blockers WHERE project_id=? AND task_id=? AND resolved_at IS NULL',(project,row['uid'])).fetchone(): research.error(409,'Resolve outstanding attempts and blockers before completion')
+        group=redirect_group(db,project,row['uid']);marks=','.join('?' for _ in group)
+        if db.execute(f"SELECT 1 FROM attempts WHERE project_id=? AND task_id IN ({marks}) AND resolution_state='unresolved'",(project,*group)).fetchone() or db.execute(f'SELECT 1 FROM task_blockers WHERE project_id=? AND task_id IN ({marks}) AND resolved_at IS NULL',(project,*group)).fetchone(): research.error(409,'Resolve outstanding attempts and blockers before completion')
         record['status']='done';record['acceptance_gate_passed']=True
     elif kind=='record_blocker':
         blocker_kind=op.get('kind')
@@ -379,7 +513,7 @@ def apply_operation(db,project,principal,op,request_id):
         db.execute('INSERT INTO task_blockers VALUES(?,?,?,?,?,?,NULL,?,?)',(str(uuid.uuid4()),project,row['uid'],blocker_kind,target,rationale,principal,current))
     elif kind=='resolve_blocker':
         blocker=research.scoped(db,'task_blockers',project,op.get('blocker_id'))
-        if blocker['task_id']!=row['uid']: research.error(404,'Blocker does not belong to task')
+        if blocker['task_id'] not in redirect_group(db,project,row['uid']): research.error(404,'Blocker does not belong to task')
         db.execute('UPDATE task_blockers SET resolved_at=? WHERE project_id=? AND id=?',(current,project,blocker['id']))
     else: research.error(400,'Unknown structural operation')
     db.execute('UPDATE tasks SET record_json=?,updated_at=? WHERE uid=?',(research.canonical(record),current,row['uid']))
@@ -417,7 +551,8 @@ def read(db,resource,project,*,task_id=None,limit=None,cursor=None,order='asc',s
     table={'validations':'validation_records','blockers':'task_blockers'}.get(resource,resource)
     if resource not in RESOURCES: research.error(404,'Unknown collaboration resource')
     query=f'SELECT * FROM {table} WHERE project_id=?';args=[project]
-    if uid is not None: query+=' AND task_id=?';args.append(uid)
+    if uid is not None:
+        group=redirect_group(db,project,uid);query+=' AND task_id IN ('+','.join('?' for _ in group)+')';args.extend(group)
     if state=='open': query+=' AND resolved_at IS NULL'
     columns=['id'] if resource=='claims' else ['created_at','id']
     query+=' ORDER BY '+','.join(column+' '+order.upper() for column in columns)+' LIMIT ? OFFSET ?';args.extend([limit+1,offset])

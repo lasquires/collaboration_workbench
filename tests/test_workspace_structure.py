@@ -7,6 +7,85 @@ from tools.roadmap_store import StoreError
 
 
 class StructureTests(ResearchTests):
+    def merge(self,survivor,absorbed):
+        preview=self.store.merge_preview(self.project,survivor,absorbed)['preview']
+        return self.write(self.guarded('merge_tasks',survivor,absorbed_id=absorbed,
+            preview_guard=preview['guard_digest'],choices={key:'survivor' for key in preview['field_conflicts']},
+            metadata_choices={key:'survivor' for key in preview['metadata_conflicts']},
+            source_references=['Synthetic workflow test; no native claim']))
+
+    def test_merge_roundtrip_preserves_identity_children_history_and_unrelated_edits(self):
+        a=self.create('a'); b=self.create('b'); child=self.create('child','b'); self.create('unrelated')
+        self.write({'op':'journal','task_id':'b','kind':'observation','text':'Absorbed task history'})
+        result=self.merge('a','b')
+        with self.store._connection() as db:
+            merge_id=db.execute('SELECT id FROM merge_records').fetchone()[0]
+        self.assertEqual(self.task('child')['parent_id'],a['id'])
+        self.assertEqual(self.task('b')['id'],a['id'])
+        redirect=self.store.read_v1('context',self.project,key='b')['redirect']
+        self.assertEqual(redirect,{'from':b['id'],'to':a['id']})
+        with self.assertRaises(StoreError):
+            self.store.transact(self.store.snapshot()['revision'],'legacy-merged-edit','legacy client',
+                                [{'op':'update','task_id':'b','fields':{'title':'Must not resurrect'}}])
+        history=self.store.read_v1('history',self.project,key='a')['items']
+        self.assertTrue(any('Absorbed task history' in str(item['details']) for item in history))
+        self.write({'op':'update','task_id':'unrelated','fields':{'summary':'Keep independent work'}})
+        preview=self.store.merge_reversal_preview(self.project,merge_id)['preview']
+        self.assertTrue(preview['can_reverse'])
+        self.write(self.guarded('reverse_merge','a',merge_id=merge_id,preview_guard=preview['guard_digest']))
+        self.assertEqual(self.task('b')['id'],b['id'])
+        self.assertEqual(self.task('child')['parent_id'],b['id'])
+        self.assertEqual(self.task('unrelated')['summary'],'Keep independent work')
+
+    def test_merge_reversal_rejects_intervening_child_edit(self):
+        self.create('a'); self.create('b'); self.create('child','b');self.merge('a','b')
+        with self.store._connection() as db: merge_id=db.execute('SELECT id FROM merge_records').fetchone()[0]
+        self.write({'op':'update','task_id':'child','fields':{'summary':'Later child edit'}})
+        preview=self.store.merge_reversal_preview(self.project,merge_id)['preview']
+        self.assertFalse(preview['can_reverse'])
+        self.assertTrue(preview['compensating_preview'])
+        with self.assertRaises(StoreError) as exc:
+            self.write(self.guarded('reverse_merge','a',merge_id=merge_id,preview_guard=preview['guard_digest']))
+        self.assertEqual(exc.exception.status,409)
+        self.assertEqual(self.task('child')['summary'],'Later child edit')
+
+    def test_merge_requires_fresh_preview_complete_choices_and_released_claims(self):
+        self.create('a');self.create('b')
+        preview=self.store.merge_preview(self.project,'a','b')['preview']
+        base=self.guarded('merge_tasks','a',absorbed_id='b',preview_guard=preview['guard_digest'],
+            choices={},metadata_choices={},source_references=['Synthetic workflow test'])
+        with self.assertRaises(StoreError):self.write(base)
+        self.write(self.guarded('claim_task','b',reserved_paths=['owned.py']))
+        with self.assertRaises(StoreError):self.merge('a','b')
+        self.write(self.guarded('release_claim','b'))
+        with self.assertRaises(StoreError):self.write({**base,'choices':{key:'survivor' for key in preview['field_conflicts']}})
+        with self.store._connection() as db:self.assertEqual(db.execute('SELECT count(*) FROM merge_records').fetchone()[0],0)
+
+    def test_merge_retains_absorbed_failures_and_blockers_in_survivor_context(self):
+        self.create('a');b=self.create('b')
+        self.write(self.guarded('record_attempt','b',boundary_id='boundary',outcome='failed',evidence=[{'note':'synthetic failure'}]))
+        self.write({**self.guarded('record_blocker','b'), 'kind':'review','target_id':None})
+        self.merge('a','b')
+        context=self.store.read_v1('context',self.project,key='a')['context']
+        self.assertTrue(context['progress']['unresolved_failure'])
+        self.assertEqual(context['structured_attempts'][0]['task_id'],b['id'])
+        self.assertTrue(context['blockers'])
+        with self.assertRaises(StoreError):self.write(self.guarded('complete_task','a'))
+        self.write(self.guarded('resolve_attempt','a',attempt_id=context['structured_attempts'][0]['id'],resolution_reason='Reviewed original failure'))
+        self.write(self.guarded('resolve_blocker','a',blocker_id=context['blockers'][0]['id']))
+        self.assertFalse(self.store.read_v1('context',self.project,key='a')['context']['progress']['unresolved_failure'])
+
+    def test_merge_remaps_legacy_dependency_records_and_rejects_absorbed_links(self):
+        self.create('a');self.create('b');self.create('c')
+        self.write({'op':'add_link','task_id':'c','target_id':'b','kind':'depends_on','rationale':'Synthetic dependency'})
+        self.merge('a','b')
+        snapshot=self.store.snapshot()
+        record=next(task['record'] for task in snapshot['tasks'] if task['id']=='c')
+        self.assertEqual(record['dependencies'],['a'])
+        with self.assertRaises(StoreError):
+            self.store.transact(snapshot['revision'],'legacy-absorbed-link','legacy client',
+                [{'op':'add_link','task_id':'a','target_id':'b','kind':'related','rationale':'Must reject merged target'}])
+
     def test_merge_preview_preserves_alternatives_children_sources_and_store(self):
         from tools.roadmap_structure import preview_merge
         survivor=self.create('survivor'); absorbed=self.create('absorbed')

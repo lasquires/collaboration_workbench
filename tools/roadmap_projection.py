@@ -23,12 +23,17 @@ def resolve_entity(db, project_id, entity_type, key):
     if entity_type != 'task' or not isinstance(key,str):
         _error(404,'Scoped entity not found')
     row = db.execute('SELECT uid FROM tasks WHERE project_id=? AND uid=?', (project_id,key)).fetchone()
-    if row:
-        return row['uid']
-    row = db.execute("SELECT t.uid FROM entity_aliases a JOIN tasks t ON t.uid=a.entity_id AND t.project_id=a.project_id WHERE a.project_id=? AND a.entity_type='task' AND a.alias=?", (project_id,key)).fetchone()
+    if not row:
+        row = db.execute("SELECT t.uid FROM entity_aliases a JOIN tasks t ON t.uid=a.entity_id AND t.project_id=a.project_id WHERE a.project_id=? AND a.entity_type='task' AND a.alias=?", (project_id,key)).fetchone()
     if not row:
         _error(404,'Scoped entity not found')
-    return row['uid']
+    uid=row['uid'];seen=set()
+    while uid not in seen:
+        seen.add(uid)
+        redirect=db.execute('SELECT survivor_id FROM task_redirects WHERE project_id=? AND absorbed_id=? AND active=1',(project_id,uid)).fetchone()
+        if redirect is None: return uid
+        uid=redirect['survivor_id']
+    _error(409,'Task redirect cycle requires review')
 
 
 def _encode(value):
@@ -77,8 +82,16 @@ def progress_projection(db, project_id, task_ids, now):
         children.setdefault(row['parent_id'],[]).append(row['child_id'])
         required[row['child_id']] = bool(row['required_for_parent'])
     result = {}
-    failures={r[0] for r in db.execute("SELECT DISTINCT task_id FROM attempts WHERE project_id=? AND resolution_state='unresolved' AND outcome='failed'",(project_id,))}
-    routing={r[0] for r in db.execute("SELECT task_id FROM attempts WHERE project_id=? AND resolution_state='unresolved' AND outcome IN ('failed','blocked','inconclusive') GROUP BY task_id,boundary_id HAVING COUNT(*)>=2",(project_id,))}
+    redirects={r['absorbed_id']:r['survivor_id'] for r in db.execute('SELECT * FROM task_redirects WHERE project_id=? AND active=1',(project_id,))}
+    def canonical(uid):
+        seen=set()
+        while uid in redirects and uid not in seen: seen.add(uid);uid=redirects[uid]
+        return uid
+    failures={canonical(r[0]) for r in db.execute("SELECT DISTINCT task_id FROM attempts WHERE project_id=? AND resolution_state='unresolved' AND outcome='failed'",(project_id,))}
+    counts={}
+    for attempt in db.execute("SELECT task_id,boundary_id FROM attempts WHERE project_id=? AND resolution_state='unresolved' AND outcome IN ('failed','blocked','inconclusive')",(project_id,)):
+        boundary=(canonical(attempt['task_id']),attempt['boundary_id']);counts[boundary]=counts.get(boundary,0)+1
+    routing={uid for (uid,boundary),count in counts.items() if count>=2}
     parent_uids={r['id']:r['uid'] for r in rows.values()}
     descendant_failures={uid:set() for uid in rows}
     for failed in failures:
@@ -123,8 +136,9 @@ def progress_projection(db, project_id, task_ids, now):
                 live=datetime.fromisoformat(lease['expires_at'].replace('Z','+00:00'))>datetime.fromisoformat(now.replace('Z','+00:00'))
                 claim_state={'state':'live' if live else 'expired','principal_id':lease['principal_id'],'label':lease['label'],'expires_at':lease['expires_at']}
             except (ValueError,TypeError): pass
-        new_hints=db.execute("SELECT COUNT(*) FROM hints h JOIN questions q ON q.project_id=h.project_id AND q.id=h.question_id WHERE h.project_id=? AND q.owner_task_id=? AND h.state='new'",(project_id,uid)).fetchone()[0]
-        blockers=[r[0] for r in db.execute('SELECT reason FROM task_blockers WHERE project_id=? AND task_id=? AND resolved_at IS NULL ORDER BY created_at,id',(project_id,uid))]
+        group=[identity for identity in rows if canonical(identity)==uid];marks=','.join('?' for _ in group) or 'NULL'
+        new_hints=db.execute(f"SELECT COUNT(*) FROM hints h JOIN questions q ON q.project_id=h.project_id AND q.id=h.question_id WHERE h.project_id=? AND q.owner_task_id IN ({marks}) AND h.state='new'",(project_id,*group)).fetchone()[0]
+        blockers=[r[0] for r in db.execute(f'SELECT reason FROM task_blockers WHERE project_id=? AND task_id IN ({marks}) AND resolved_at IS NULL ORDER BY created_at,id',(project_id,*group))]
         result[uid] = {**buckets,'decomposition_complete':bool(row['decomposition_complete']),
                        'own_acceptance':row['acceptance_state'],'unresolved_failure':uid in failures,
                        'failed_descendant_tasks':len(descendant_failures[uid]),'claim':claim_state,
@@ -186,6 +200,10 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
         return {**envelope,'items':items,'next_cursor':_event_cursor(db,project_id,items[-1]['sequence']) if len(rows)>limit else None,'event_cursor':_event_cursor(db,project_id,items[-1]['sequence'] if items else sequence)}
     rows=_rows(db,project_id)
     uid=resolve_entity(db,project_id,'task',key) if resource in ('context','neighborhood','history') else None
+    if uid is not None:
+        original=db.execute("SELECT uid FROM tasks WHERE project_id=? AND (uid=? OR uid IN (SELECT entity_id FROM entity_aliases WHERE project_id=? AND entity_type='task' AND alias=?))",(project_id,key,project_id,key)).fetchone()
+        if original and original['uid']!=uid:
+            envelope['redirect']={'from':original['uid'],'to':uid}
     binding={'resource':resource,'project_id':project_id,'revision':revision,'key':uid,'depth':depth,'limit':limit}
     offset=0
     if cursor:
@@ -197,14 +215,20 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
         offset=page['offset']
     event_cursor=_event_cursor(db,project_id)
     if resource=='history':
-        legacy=rows[uid]['id']
-        events=list(db.execute('SELECT * FROM events WHERE task_id=? ORDER BY sequence DESC LIMIT ? OFFSET ?', (legacy,limit+1,offset)))
+        try:
+            from .roadmap_structure import redirect_group
+        except ImportError:
+            from roadmap_structure import redirect_group
+        legacy=[rows[identity]['id'] for identity in redirect_group(db,project_id,uid)]
+        marks=','.join('?' for _ in legacy)
+        events=list(db.execute(f'SELECT * FROM events WHERE task_id IN ({marks}) ORDER BY sequence DESC LIMIT ? OFFSET ?', (*legacy,limit+1,offset)))
         items=[]
         for event in events[:limit]:
             item=dict(event)
             item['actor']=json.loads(item.pop('actor_json')) if item['actor_json'] else None
             item['details']=json.loads(item.pop('details_json'))
             item['source']='legacy-compatible task audit'
+            item['original_task_id']=next(identity for identity in rows if rows[identity]['id']==item['task_id'])
             item['task_id']=uid
             items.append(item)
         return {**envelope,'items':items,'event_cursor':event_cursor,

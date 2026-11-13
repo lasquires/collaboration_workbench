@@ -465,6 +465,17 @@ class RoadmapStore:
             finally:
                 db.rollback()
 
+    def merge_reversal_preview(self, project_id, merge_id):
+        with self._connection() as db:
+            db.execute('BEGIN')
+            try:
+                roadmap_projection._coverage(db,project_id)
+                return {'api_version':roadmap_projection.API_VERSION,'project_id':project_id,
+                        'revision':self._revision(self._meta(db)),
+                        'preview':roadmap_structure.preview_merge_reversal(db,project_id,merge_id)}
+            finally:
+                db.rollback()
+
     def merge_preview(self, project_id, survivor_id, absorbed_id):
         with self._connection() as db:
             db.execute('BEGIN')
@@ -651,6 +662,10 @@ class RoadmapStore:
                         if previous is None or previous["task_id"] != operation.get("task_id"):
                             raise StoreError(400, "Correction must reference an existing event on the same task")
                     event_data.append(self._operate(tasks, links, operation, actor))
+                for redirected in db.execute('SELECT t.id FROM task_redirects r JOIN tasks t ON t.uid=r.absorbed_id AND t.project_id=r.project_id WHERE r.active=1'):
+                    for operation in task_operations:
+                        if (operation.get('task_id')==redirected['id'] and operation.get('op') in ('update','set_parent','archive','claim','add_link','remove_link')) or operation.get('parent_id')==redirected['id'] or (operation.get('op') in ('add_link','remove_link') and operation.get('target_id')==redirected['id']):
+                            raise StoreError(409,'Task was merged; use its survivor or reverse the merge')
                 self._validate(tasks, links)
                 self._gates(before, tasks, links, task_operations, validated_tasks=validated_tasks)
                 self._write_state(db, tasks, links, project_id=_workspace["payload"]["project_id"] if _workspace else None)
@@ -699,6 +714,7 @@ class RoadmapStore:
                 for task_id, kind, details in event_data:
                     self._event(db, request_id, task_id, actor, kind, details,
                                 principal_id=_workspace["payload"]["actor"]["principal_id"] if _workspace else None)
+                roadmap_structure.finalize_merges(db,request_id)
                 db.execute("UPDATE store_meta SET revision=revision+1")
                 result = self._snapshot(db)
                 if _workspace:

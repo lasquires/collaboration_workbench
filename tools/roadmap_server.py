@@ -158,7 +158,7 @@ def transact(payload: object) -> dict:
 def workspace_read(parsed):
     """Strict versioned read adapter; project selection is never implicit."""
     params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
-    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id"}
+    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id", "merge_id"}
     if set(params) - allowed or any(len(values) != 1 for values in params.values()):
         raise RoadmapError(400, "Unknown or duplicate workspace parameter")
     values = {key: item[0] for key, item in params.items()}
@@ -179,6 +179,10 @@ def workspace_read(parsed):
         if params:
             raise RoadmapError(400, "Capabilities project is selected by path")
         return _store().read_v1("capabilities", urllib.parse.unquote(path[2]))
+    if path == ['v1','tasks','merge-reversal-preview']:
+        if set(options)!={'merge_id'}:
+            raise RoadmapError(400,'Merge reversal preview requires merge_id')
+        return _store().merge_reversal_preview(project_id,options['merge_id'])
     if path == ['v1','tasks','merge-preview']:
         if set(options)!={'survivor_id','absorbed_id'}:
             raise RoadmapError(400,'Merge preview requires survivor_id and absorbed_id')
