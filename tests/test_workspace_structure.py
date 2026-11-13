@@ -7,6 +7,66 @@ from tools.roadmap_store import StoreError
 
 
 class StructureTests(ResearchTests):
+    def test_merge_preview_preserves_alternatives_children_sources_and_store(self):
+        from tools.roadmap_structure import preview_merge
+        survivor=self.create('survivor'); absorbed=self.create('absorbed')
+        child=self.create('child','absorbed')
+        self.write({'op':'update','task_id':'survivor','fields':{'evidence':['source-a']}})
+        self.write({'op':'update','task_id':'absorbed','fields':{'evidence':['source-b']}})
+        before=self.store.snapshot()
+        with self.store._connection() as db:
+            count=db.total_changes
+            preview=preview_merge(db,self.project,survivor['id'],absorbed['id'])
+            self.assertEqual(db.total_changes,count)
+        self.assertEqual(self.store.snapshot(),before)
+        self.assertEqual(preview['field_conflicts']['title'],
+                         {'survivor':{'present':True,'value':'survivor'},
+                          'absorbed':{'present':True,'value':'absorbed'}})
+        self.assertEqual(preview['source_union'],['source-a','source-b'])
+        self.assertEqual(preview['proposed_children'][0]['child_id'],child['id'])
+        self.assertEqual(preview['proposed_children'][0]['parent_id'],survivor['id'])
+        self.assertEqual(preview['redirect'],{'from':absorbed['id'],'to':survivor['id']})
+        self.write({'op':'update','task_id':'child','fields':{'summary':'Intervening edit'}})
+        with self.store._connection() as db:
+            changed=preview_merge(db,self.project,survivor['id'],absorbed['id'])
+        self.assertNotEqual(preview['guard_digest'],changed['guard_digest'])
+
+    def test_merge_preview_reports_claims_and_dependency_self_edges(self):
+        from tools.roadmap_structure import preview_merge
+        a=self.create('a'); b=self.create('b')
+        self.write(self.guarded('claim_task','b',reserved_paths=['tools/owned.py']))
+        self.write({'op':'add_link','task_id':'a','target_id':'b','kind':'depends_on',
+                    'rationale':'Synthetic prerequisite'})
+        with self.store._connection() as db:
+            preview=preview_merge(db,self.project,a['id'],b['id'])
+        self.assertEqual(len(preview['claim_conflicts']),1)
+        self.assertEqual(preview['claim_conflicts'][0]['reservations'][0]['normalized_path'],'tools/owned.py')
+        self.assertIn('dependency_self_edge',[item['kind'] for item in preview['problems']])
+
+    def test_merge_preview_reports_ancestor_collapse_and_rejects_same_task(self):
+        from tools.roadmap_structure import preview_merge
+        parent=self.create('parent'); child=self.create('child','parent')
+        with self.store._connection() as db:
+            preview=preview_merge(db,self.project,child['id'],parent['id'])
+            self.assertIn('containment_ancestor',[item['kind'] for item in preview['problems']])
+            with self.assertRaises(StoreError): preview_merge(db,self.project,parent['id'],'parent')
+
+    def test_merge_preview_detects_longer_dependency_cycle_and_keeps_link_provenance(self):
+        from tools.roadmap_structure import preview_merge
+        a=self.create('a'); b=self.create('b'); self.create('middle'); self.create('other')
+        for source,target in [('a','middle'),('middle','b'),('a','other'),('b','other')]:
+            self.write({'op':'add_link','task_id':source,'target_id':target,'kind':'depends_on',
+                        'rationale':'Evidence from '+source})
+        with self.store._connection() as db:
+            preview=preview_merge(db,self.project,a['id'],b['id'])
+            with self.assertRaises(StoreError) as exc:
+                preview_merge(db,'foreign-project',a['id'],b['id'])
+            self.assertEqual(exc.exception.status,404)
+        self.assertIn('dependency_cycle',[item['kind'] for item in preview['problems']])
+        shared=next(edge for edge in preview['proposed_links'] if edge['target_id']=='other')
+        self.assertEqual({item['rationale'] for item in shared['provenance']},
+                         {'Evidence from a','Evidence from b'})
+
     def task(self, alias):
         return self.store.read_v1('context',self.project,key=alias)['context']['task']
 

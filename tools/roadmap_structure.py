@@ -124,6 +124,107 @@ def ancestors(db,project,uid):
     return result
 
 
+def preview_merge(db,project,survivor_id,absorbed_id):
+    """Describe a prospective merge without changing records or choosing winners.
+
+    The digest guards the captured scope, including children and incident links.
+    It is a preview contract only; it does not authorize or perform a merge.
+    """
+    survivor=task_row(db,project,survivor_id)
+    absorbed=task_row(db,project,absorbed_id)
+    if survivor['uid']==absorbed['uid']:
+        research.error(400,'Merge requires two distinct tasks')
+    pair={survivor['uid'],absorbed['uid']}
+    records=[json.loads(row['record_json']) for row in (survivor,absorbed)]
+    conflicts={}
+    for key in sorted(set(records[0])|set(records[1])):
+        if key=='id': continue
+        values=[{'present':key in record,**({'value':record[key]} if key in record else {})}
+                for record in records]
+        if values[0]!=values[1]:
+            conflicts[key]={'survivor':values[0],'absorbed':values[1]}
+    sources={research.canonical(value):value for record in records for value in record.get('evidence',[])}
+    children=[dict(row) for row in db.execute(
+        'SELECT * FROM containment WHERE project_id=? AND parent_id IN (?,?) ORDER BY parent_id,sibling_order,child_id',
+        (project,survivor['uid'],absorbed['uid']))]
+    affected={row['uid']:dict(row) for identity in pair for row in ancestors(db,project,identity)}
+    for edge in children:
+        row=task_row(db,project,edge['child_id']);affected[row['uid']]=dict(row)
+    claims=[]
+    for row in db.execute('SELECT * FROM claims WHERE project_id=? AND task_id IN (?,?) AND released_at IS NULL ORDER BY id',
+                          (project,survivor['uid'],absorbed['uid'])):
+        claim=dict(row)
+        claim['reservations']=[dict(item) for item in db.execute(
+            'SELECT * FROM reservations WHERE project_id=? AND claim_id=? ORDER BY normalized_path,path_kind',
+            (project,row['id']))]
+        claims.append(claim)
+    problems=[]
+    if any(row['uid']==survivor['uid'] for row in ancestors(db,project,absorbed['uid'])[1:]) or any(
+            row['uid']==absorbed['uid'] for row in ancestors(db,project,survivor['uid'])[1:]):
+        problems.append({'kind':'containment_ancestor','reason':'Merging ancestor and descendant requires an explicit containment plan'})
+    for row in (survivor,absorbed):
+        if row['archive_reason'] is not None:
+            problems.append({'kind':'archived_task','task_id':row['uid']})
+    for row in affected.values():
+        if json.loads(row['record_json'])['status']=='done':
+            problems.append({'kind':'completed_scope','task_id':row['uid'],'reason':'Reopen affected completed scope before merging'})
+    redirects=[dict(row) for row in db.execute(
+        'SELECT * FROM task_redirects WHERE project_id=? AND active=1 AND (absorbed_id IN (?,?) OR survivor_id IN (?,?)) ORDER BY absorbed_id,merge_id',
+        (project,*sorted(pair),*sorted(pair)))]
+    if redirects: problems.append({'kind':'existing_redirect','reason':'Resolve existing merge redirects before composing another merge'})
+    all_links=[dict(row) for row in db.execute(
+        'SELECT l.* FROM task_links l JOIN tasks s ON s.id=l.source_id JOIN tasks t ON t.id=l.target_id WHERE s.project_id=? AND t.project_id=? ORDER BY l.source_id,l.target_id,l.kind',
+        (project,project))]
+    links=[];proposed={};dependencies={}
+    for original in all_links:
+        edge=dict(original)
+        edge['source_id']=survivor['id'] if edge['source_id']==absorbed['id'] else edge['source_id']
+        edge['target_id']=survivor['id'] if edge['target_id']==absorbed['id'] else edge['target_id']
+        incident=original['source_id'] in (survivor['id'],absorbed['id']) or original['target_id'] in (survivor['id'],absorbed['id'])
+        if incident:
+            links.append(original)
+            for identity in (original['source_id'],original['target_id']):
+                row=task_row(db,project,identity);affected[row['uid']]=dict(row)
+            key=(edge['source_id'],edge['target_id'],edge['kind'])
+            target=proposed.setdefault(key,{'source_id':edge['source_id'],'target_id':edge['target_id'],
+                                          'kind':edge['kind'],'provenance':[]})
+            target['provenance'].append(original)
+            if edge['source_id']==edge['target_id']:
+                problems.append({'kind':'dependency_self_edge' if edge['kind']=='depends_on' else 'relationship_self_edge',
+                                 'edge':original,'reason':'Explicit removal or resolution with rationale required'})
+        if edge['kind']=='depends_on' and edge['source_id']!=edge['target_id']:
+            dependencies.setdefault(edge['source_id'],set()).add(edge['target_id'])
+            dependencies.setdefault(edge['target_id'],set())
+    # Iterative topological check also detects cycles introduced by collapsing
+    # the ends of a longer prerequisite chain, without recursion depth limits.
+    incoming={key:0 for key in dependencies}
+    for targets in dependencies.values():
+        for target in targets: incoming[target]+=1
+    ready=[key for key,count in incoming.items() if count==0];visited=0
+    while ready:
+        key=ready.pop();visited+=1
+        for target in dependencies[key]:
+            incoming[target]-=1
+            if incoming[target]==0: ready.append(target)
+    if visited!=len(dependencies): problems.append({'kind':'dependency_cycle'})
+    metadata=['acceptance_state','validation_id','gate_revision','decomposition_complete','area_id']
+    snapshot={'tasks':sorted(affected.values(),key=lambda row:row['uid']),
+              'children':children,'links':all_links,'claims':claims,'redirects':redirects}
+    return {'survivor_id':survivor['uid'],'absorbed_id':absorbed['uid'],
+            'guard_digest':research.digest(snapshot),
+            'guards':{uid:{'record_revision':row['revision'],'structure_revision':row['structure_revision']}
+                      for uid,row in sorted(affected.items())},
+            'field_conflicts':conflicts,
+            'metadata_conflicts':{key:{'survivor':survivor[key],'absorbed':absorbed[key]}
+                                  for key in metadata if survivor[key]!=absorbed[key]},
+            'source_union':[sources[key] for key in sorted(sources)],
+            'proposed_children':[{**edge,'parent_id':survivor['uid']} for edge in children if edge['child_id'] not in pair],
+            'original_links':links,'proposed_links':list(proposed.values()),
+            'claim_conflicts':claims,'problems':problems,
+            'redirect':{'from':absorbed['uid'],'to':survivor['uid']},
+            'acceptance_requires_review':True,'apply_available':False}
+
+
 def parent_guards(db,project,parent_ids,op):
     expected=op.get('expected_parents',{})
     if not isinstance(expected,dict): research.error(400,'Expected parent revisions must be an object')

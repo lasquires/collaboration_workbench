@@ -60,6 +60,22 @@ class RoadmapTransactionsApiTests(unittest.TestCase):
         self.assertEqual({"root", "child"}, {n["id"] for n in graph["nodes"]})
         self.assertTrue(graph["nodes"][0]["provenance"])
 
+    def test_merge_preview_is_scoped_readonly_and_requires_both_tasks(self):
+        from urllib.parse import urlencode
+        project=self.get('/v1/projects')['items'][0]['id']
+        before=self.get()
+        query=urlencode({'project_id':project,'survivor_id':'root','absorbed_id':'child'})
+        result=self.get('/v1/tasks/merge-preview?'+query)
+        self.assertEqual(result['revision'],before['revision'])
+        self.assertFalse(result['preview']['apply_available'])
+        self.assertIn('containment_ancestor',[item['kind'] for item in result['preview']['problems']])
+        self.assertEqual(self.get(),before)
+        for params in ({'project_id':project,'survivor_id':'root'},
+                       {'project_id':project,'survivor_id':'root','absorbed_id':'child','limit':1}):
+            with self.assertRaises(urllib.error.HTTPError) as exc:
+                self.get('/v1/tasks/merge-preview?'+urlencode(params))
+            self.assertEqual(exc.exception.code,400)
+
     def test_transaction_and_compatibility_wrappers_share_store(self):
         current = self.get()
         updated = self.post("/api/transaction", {

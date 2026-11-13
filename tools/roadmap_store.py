@@ -465,6 +465,17 @@ class RoadmapStore:
             finally:
                 db.rollback()
 
+    def merge_preview(self, project_id, survivor_id, absorbed_id):
+        with self._connection() as db:
+            db.execute('BEGIN')
+            try:
+                roadmap_projection._coverage(db,project_id)
+                return {'api_version':roadmap_projection.API_VERSION,'project_id':project_id,
+                        'revision':self._revision(self._meta(db)),
+                        'preview':roadmap_structure.preview_merge(db,project_id,survivor_id,absorbed_id)}
+            finally:
+                db.rollback()
+
     def exchange_preview(self, project_id, bundle=None, ancestor_id=None):
         try:
             from . import roadmap_exchange
