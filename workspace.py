@@ -47,6 +47,10 @@ def load_manifest(repo):
     raw=path.read_bytes()
     if len(raw)>65536: raise ValueError('Project manifest exceeds 64 KB')
     document=json.loads(raw.decode('utf-8-sig'))
+    return validate_manifest(document)
+
+
+def validate_manifest(document):
     if not isinstance(document,dict) or set(document)!={'protocol','project_id','name'} or document['protocol']!=PROTOCOL:
         raise ValueError('Unsupported or malformed project manifest')
     if not isinstance(document['project_id'],str) or not isinstance(document['name'],str) or not document['name'].strip() or len(document['name'])>200:
@@ -63,11 +67,17 @@ def transaction(url,project,operations):
         'request_id':str(uuid.uuid4()),'expected_revision':caps['revision'],'operations':operations})
 
 
-def setup_project(directory,url=DEFAULT_URL,*,apply=False,name=None):
+def setup_project(directory,url=DEFAULT_URL,*,apply=False,name=None,proposed_manifest=None):
     url=local_url(url);metadata=inspect_repository(directory);repo=Path(metadata.root)
     if Path(directory).resolve()!=repo: raise ValueError('Choose the repository root, not a nested directory')
     manifest_path=repo/MANIFEST
-    manifest=load_manifest(repo) if manifest_path.exists() else {'protocol':PROTOCOL,'project_id':str(uuid.uuid4()),'name':name or repo.name}
+    existing_manifest=load_manifest(repo) if manifest_path.exists() else None
+    if proposed_manifest is not None:
+        validate_manifest(proposed_manifest)
+        if existing_manifest is not None and proposed_manifest!=existing_manifest:
+            raise ApiError(409,'Project manifest changed since preview; reread and reconcile')
+    manifest=existing_manifest or proposed_manifest or {'protocol':PROTOCOL,'project_id':str(uuid.uuid4()),'name':name or repo.name}
+    validate_manifest(manifest)
     instruction_path=repo/'.research-workspace/AGENTS.md'
     if not instruction_path.resolve().is_relative_to(repo) or not manifest_path.resolve().is_relative_to(repo):
         raise ValueError('Integration files must remain inside the repository')
@@ -89,7 +99,7 @@ Git text exports; review conflicts explicitly. A hint or workflow status does no
 verify a forensic claim. Never edit the app database directly or merge SQLite
 files. See the platform's project-agent setup guide for the supported commands.
 """
-    files={str(MANIFEST):json.dumps(manifest,ensure_ascii=False,sort_keys=True,indent=2)+'\n',
+    files={MANIFEST.as_posix():json.dumps(manifest,ensure_ascii=False,sort_keys=True,indent=2)+'\n',
            '.research-workspace/AGENTS.md':instructions}
     if not apply: return {'project_id':manifest['project_id'],'repository':str(repo),'apply':False,'files':files}
     # Existing integration prose belongs to the project. Never overwrite it.
@@ -110,7 +120,7 @@ files. See the platform's project-agent setup guide for the supported commands.
         transaction(url,manifest['project_id'],[{'op':'register_repository','root':str(repo)}])
     manifest_path.parent.mkdir(parents=True,exist_ok=True)
     if not manifest_path.exists():
-        with manifest_path.open('x',encoding='utf-8',newline='\n') as output: output.write(files[str(MANIFEST)])
+        with manifest_path.open('x',encoding='utf-8',newline='\n') as output: output.write(files[MANIFEST.as_posix()])
     if not instruction_path.exists():
         with instruction_path.open('x',encoding='utf-8',newline='\n') as output: output.write(instructions)
     return {'project_id':manifest['project_id'],'repository':str(repo),'apply':True,

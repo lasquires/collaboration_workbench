@@ -21,7 +21,8 @@ any working directory.
 
 ## Connect a repository
 
-With the app running:
+With the app running, open **Repositories** to preview and apply a local repository
+connection in the UI. Project agents can use the equivalent commands:
 
 ```text
 python workspace.py setup --repo <repository-root>
@@ -45,8 +46,8 @@ This is an actively developed prototype, not a complete release. Independent
 startup, project registration, tasks, evidence indexing, matching hints, documents,
 question editing, and guarded core merge/reversal APIs are implemented.
 
-Automatic Git source refresh, shared research synchronization, the in-app
-repository connection flow, complete merge conflict compensation, and final
+Automatic Git source refresh, shared research synchronization, optional live-service
+request authentication and transport, complete merge conflict compensation, and final
 end-to-end/scale acceptance are still being completed. Doctor reports pending
 synchronization explicitly. A successful connection is not evidence that research
 has synchronized, and workflow completion never establishes forensic correctness.
@@ -55,3 +56,9 @@ The relevant source history was preserved during extraction from the SSG2
 prototype. See [extraction provenance](EXTRACTION.md) and the standalone design and
 implementation plan under `docs/superpowers/`. No game assets, native binaries,
 credentials or live project databases are included in this repository.
+
+The [hybrid collaboration design](docs/superpowers/specs/2026-11-13-hybrid-collaboration.md)
+covers optional free self-hosting, Git-only fallback, batched synchronization and
+offline reconciliation. Authentication and read-only Git snapshot modules have
+isolated tests; their presence alone does not enable remote sharing or continuous
+synchronization.

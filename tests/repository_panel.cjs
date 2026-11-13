@@ -1,0 +1,16 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const vm=require('node:vm');
+const panel=require('../docs/workspace-repositories.js');
+assert.throws(()=>panel.setupPayload('/repo',true),/preview/);
+const manifest={protocol:'research-workspace/v1',project_id:'fixed-id',name:'Project'};
+const payload=panel.setupPayload(' /repo ',true,manifest);
+manifest.project_id='changed-later';
+assert.equal(payload.root,'/repo');
+assert.equal(payload.manifest.project_id,'fixed-id','apply preserves the preview identity independently of later draft changes');
+assert.equal(payload.apply,true);
+const html=fs.readFileSync('docs/roadmap-dashboard.html','utf8');
+assert.match(html,/id="repositoryForm"/);
+assert.match(html,/src="\/assets\/workspace-repositories.js"/);
+assert.doesNotThrow(()=>new vm.Script(fs.readFileSync('docs/workspace-repositories.js','utf8')));
+console.log('repository connection panel checks passed');

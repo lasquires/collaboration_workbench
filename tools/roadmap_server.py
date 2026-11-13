@@ -265,7 +265,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(data)))
         self.end_headers(); self.wfile.write(data)
 
+    def _check_origin(self):
+        host=self.headers.get('Host','').lower()
+        port=self.server.server_address[1]
+        allowed=getattr(self.server,'accepted_hosts',None) or {f'127.0.0.1:{port}',f'localhost:{port}',f'[::1]:{port}'}
+        if host not in allowed:
+            raise RoadmapError(403,'Unrecognized service host')
+        origin=self.headers.get('Origin')
+        if origin is not None and origin not in ('http://'+host,'https://'+host):
+            raise RoadmapError(403,'Cross-origin workspace requests are not allowed')
+
     def _body(self):
+        self._check_origin()
+        if self.headers.get('Content-Type','').split(';',1)[0].strip().lower()!='application/json':
+            raise RoadmapError(415,'Workspace mutations require application/json')
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if length < 0 or length > 8 * 1024 * 1024:
@@ -277,6 +290,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         try:
+            self._check_origin()
             if parsed.path.startswith("/v1/"):
                 self._json(200, workspace_read(parsed))
             elif parsed.path == "/api/tasks" and not parsed.query:
@@ -310,6 +324,11 @@ class Handler(BaseHTTPRequestHandler):
                 if exact not in {"true", "false"}:
                     raise RoadmapError(400, "Exact must be true or false")
                 self._json(200, variable_occurrences(params.get("query", [""])[0], exact == "true"))
+            elif parsed.path == '/assets/workspace-repositories.js' and not parsed.query:
+                body=(ROOT/'docs'/'workspace-repositories.js').read_bytes()
+                self.send_response(200);self.send_header('Content-Type','text/javascript; charset=utf-8')
+                self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(body)))
+                self.end_headers();self.wfile.write(body)
             elif parsed.path in {"/", "/index.html", "/graph"} and not parsed.query:
                 page = ROOT / "docs" / ("task-graph.html" if parsed.path == "/graph" else "roadmap-dashboard.html")
                 body = page.read_bytes(); self.send_response(200)
@@ -330,7 +349,22 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             payload = self._body()
-            if parsed.path == "/v1/transactions" and not parsed.query:
+            if parsed.path == '/v1/repository-setup' and not parsed.query:
+                if not isinstance(payload,dict) or not {'root','apply'}<=set(payload) or set(payload)-{'root','apply','manifest','name'} or type(payload['apply']) is not bool:
+                    raise RoadmapError(400,'Repository setup requires root and boolean apply')
+                if not isinstance(payload['root'],str) or not 0<len(payload['root'])<=4000 or '\x00' in payload['root']:
+                    raise RoadmapError(400,'Invalid repository root')
+                if payload['apply'] and 'manifest' not in payload:
+                    raise RoadmapError(400,'Apply requires the project manifest from the preview')
+                import workspace
+                try:
+                    result=workspace.setup_project(payload['root'],f'http://127.0.0.1:{self.server.server_address[1]}',
+                        apply=payload['apply'],name=payload.get('name'),proposed_manifest=payload.get('manifest'))
+                except workspace.ApiError as exc:
+                    raise RoadmapError(exc.status if 400<=exc.status<600 else 503,str(exc)) from exc
+                except workspace.GitAdapterError as exc:
+                    raise RoadmapError(400,str(exc)) from exc
+            elif parsed.path == "/v1/transactions" and not parsed.query:
                 result = _store().transact_v1(payload)
             elif parsed.path == "/v1/variable-import-preview" and not parsed.query:
                 result = _store().preview_variable_registry(payload)
