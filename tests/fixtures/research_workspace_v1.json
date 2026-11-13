@@ -1,0 +1,127 @@
+{
+  "api_version": "research-workspace/v1",
+  "project_id": "00000000-0000-4000-8000-000000000001",
+  "revision": "fixture-store:2",
+  "root_id": "00000000-0000-4000-8000-000000000010",
+  "nodes": [
+    {
+      "id": "00000000-0000-4000-8000-000000000010",
+      "alias": "PARENT",
+      "legacy_id": "PARENT",
+      "project_id": "00000000-0000-4000-8000-000000000001",
+      "parent_id": null,
+      "title": "Restore original behavior",
+      "status": "active",
+      "record_revision": 2,
+      "structure_revision": 1,
+      "archived_at": null,
+      "archive_reason": null,
+      "progress": {
+        "required": {
+          "total": 3,
+          "by_state": {
+            "done": 2,
+            "blocked": 1
+          },
+          "accepted_done": 1
+        },
+        "optional": {
+          "total": 1,
+          "by_state": {
+            "ready": 1
+          }
+        },
+        "decomposition_complete": false,
+        "own_acceptance": "pending",
+        "unresolved_failure": false,
+        "failed_descendant_tasks": 0,
+        "claim": {
+          "state": "live",
+          "principal_id": "00000000-0000-4000-8000-000000000002",
+          "expires_at": "2030-01-01T00:00:00Z",
+          "label": "fixture worker"
+        },
+        "blocked_reason": null,
+        "review_required": false,
+        "new_hint_count": 0,
+        "archived_children": 0
+      },
+      "summary": "Synthetic API contract fixture.",
+      "owner": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000011",
+      "alias": "CHILD",
+      "legacy_id": "CHILD",
+      "project_id": "00000000-0000-4000-8000-000000000001",
+      "parent_id": "00000000-0000-4000-8000-000000000010",
+      "title": "Historical scope without verified gate",
+      "status": "done",
+      "record_revision": 1,
+      "structure_revision": 1,
+      "archived_at": null,
+      "archive_reason": null,
+      "progress": {
+        "required": {
+          "total": 0,
+          "by_state": {},
+          "accepted_done": 0
+        },
+        "optional": {
+          "total": 0,
+          "by_state": {}
+        },
+        "decomposition_complete": false,
+        "own_acceptance": "unknown",
+        "unresolved_failure": false,
+        "failed_descendant_tasks": 0,
+        "claim": {
+          "state": "unclaimed",
+          "principal_id": null,
+          "expires_at": null,
+          "label": null
+        },
+        "blocked_reason": null,
+        "review_required": true,
+        "new_hint_count": 0,
+        "archived_children": 0
+      },
+      "summary": "Synthetic API contract fixture.",
+      "owner": null
+    }
+  ],
+  "edges": [
+    {
+      "id": "contains:00000000-0000-4000-8000-000000000010:00000000-0000-4000-8000-000000000011",
+      "kind": "contains",
+      "source_id": "00000000-0000-4000-8000-000000000010",
+      "target_id": "00000000-0000-4000-8000-000000000011"
+    }
+  ],
+  "frontier": [
+    {
+      "id": "00000000-0000-4000-8000-000000000010",
+      "has_more_children": true
+    }
+  ],
+  "coverage": {
+    "source": "SQLite workspace",
+    "complete": false,
+    "indexed": [
+      "imported tasks"
+    ],
+    "uncovered": [
+      "research observations",
+      "historical tasks outside imported coverage"
+    ]
+  },
+  "event_cursor": "eyJraW5kIjoiZXZlbnRzIiwicHJvamVjdF9pZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsInNlcXVlbmNlIjowfQ",
+  "next_cursor": null,
+  "conflict_example": {
+    "error": "Snapshot cursor expired; restart required",
+    "code": "conflict",
+    "conflicts": [],
+    "latest_revision": "fixture-store:3",
+    "restart_required": true
+  }
+}

@@ -13,7 +13,9 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REGISTRY = REPO_ROOT / "analysis" / "variable-occurrences.json"
-DEFAULT_BOARD = REPO_ROOT / "docs" / "BOARD.md"
+# This file now documents the workflow. Keep legacy variable wishes resolvable
+# against the byte-preserved task-reference text after task state moves to SQLite.
+DEFAULT_BOARD = REPO_ROOT / "docs" / "journal" / "BOARD-HISTORY-2026-11-12.md"
 DEFAULT_NATIVE_MAP = REPO_ROOT / "analysis" / "native-map.json"
 KINDS = {"plist_key", "native_property", "native_ivar", "local_or_parameter", "serialized_field", "other"}
 EVIDENCE_STATUSES = {"executed", "instruction-derived", "source-key-match", "located", "names-only", "inferred", "unknown", "disputed"}
@@ -66,6 +68,8 @@ def validate_registry(
     repo_root: Path = REPO_ROOT,
     board_path: Path = DEFAULT_BOARD,
     native_map_path: Path = DEFAULT_NATIVE_MAP,
+    task_ids: set[str] | None = None,
+    board_reference_text: str | None = None,
 ) -> list[str]:
     """Return actionable structural/reference errors; never assess native truth."""
     errors: list[str] = []
@@ -84,8 +88,9 @@ def validate_registry(
         errors.append("task_wishes: expected an array")
         wishes = []
 
-    board_text = board_path.read_text(encoding="utf-8") if board_path.exists() else ""
-    task_ids = _board_task_ids(board_text)
+    board_text = (board_reference_text if board_reference_text is not None else
+                  board_path.read_text(encoding="utf-8") if board_path.exists() else "")
+    task_ids = set(task_ids) if task_ids is not None else _board_task_ids(board_text)
     try:
         native_map = _read_json(native_map_path)
         mapping_ids = {m.get("id") for m in native_map.get("mappings", []) if isinstance(m, dict)}

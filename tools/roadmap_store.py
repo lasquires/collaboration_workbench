@@ -16,6 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+try:
+    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents
+except ImportError:
+    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents
+
 SCHEMA_VERSION = 1
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
 _STATUSES = {"ready", "active", "blocked", "review", "done"}
@@ -139,6 +144,10 @@ class RoadmapStore:
                 except Exception:
                     db.rollback()
                     raise
+            try:
+                roadmap_schema.migrate(db, fresh=not names)
+            except ValueError as exc:
+                raise StoreError(503, str(exc)) from exc
             self._meta(db)
 
     @contextmanager
@@ -162,7 +171,7 @@ class RoadmapStore:
 
     def _meta(self, db):
         row = db.execute("SELECT * FROM store_meta WHERE singleton=1").fetchone()
-        if row is None or row["schema_version"] != SCHEMA_VERSION:
+        if row is None or row["schema_version"] != roadmap_schema.SCHEMA_VERSION:
             raise StoreError(503, "Unsupported task database schema")
         return row
 
@@ -207,6 +216,21 @@ class RoadmapStore:
                 "revision": self._revision(meta), "source_sha256": meta["source_sha256"],
                 "partial_coverage": True, "tasks": ordered, "links": links, "events": events}
 
+    @staticmethod
+    def _legacy_from_snapshot(snapshot):
+        """Reconstruct v1 records iteratively for legacy graph/UI clients."""
+        nodes = {t["id"]: _copy(t["record"]) for t in snapshot["tasks"]}
+        roots = []
+        for task in snapshot["tasks"]:
+            node = nodes[task["id"]]
+            if "subtasks" in task["original_record"]:
+                node["subtasks"] = []
+            if task["parent_id"] is None:
+                roots.append(node)
+            else:
+                nodes[task["parent_id"]].setdefault("subtasks", []).append(node)
+        return roots
+
     def snapshot(self):
         with self._connection() as db:
             db.execute("BEGIN")
@@ -230,10 +254,18 @@ class RoadmapStore:
                 nodes[task["parent_id"]].setdefault("subtasks", []).append(node)
         return roots
 
-    def _event(self, db, request_id, task_id, actor, kind, details, historical_at=None):
+    def _event(self, db, request_id, task_id, actor, kind, details, historical_at=None, principal_id=None):
         db.execute("INSERT INTO events(event_id,request_id,task_id,actor_json,recorded_at,historical_at,kind,details_json) VALUES(?,?,?,?,?,?,?,?)",
                    (str(uuid.uuid4()), request_id, task_id, _json(actor) if actor else None,
                     datetime.now(timezone.utc).isoformat(), historical_at, kind, _json(details)))
+        if task_id is not None and kind != "legacy_attempt":
+            task = db.execute("SELECT uid,project_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+            principal_id = principal_id or roadmap_schema.principal_for_label(db, task["project_id"], actor["name"])
+            db.execute("INSERT INTO workspace_events(id,project_id,request_id,actor_id,entity_type,entity_id,kind,before_json,after_json,rationale,recorded_at) VALUES(?,?,?,?,'task',?,?,?,?,?,?)",
+                       (str(uuid.uuid4()), task["project_id"], request_id, principal_id, task["uid"], kind,
+                        _json(details.get("before")) if "before" in details else None,
+                        _json(details.get("after")) if "after" in details else None,
+                        details.get("text"), datetime.now(timezone.utc).isoformat()))
 
     def import_v1(self, records, source_sha256):
         if not isinstance(source_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
@@ -355,13 +387,14 @@ class RoadmapStore:
             result.append((_path(path).casefold(), directory))
         return result
 
-    def _write_state(self, db, tasks, links):
+    def _write_state(self, db, tasks, links, project_id=None):
         for t in tasks.values():
-            db.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,sibling_order=excluded.sibling_order,record_json=excluded.record_json,archive_reason=excluded.archive_reason",
+            db.execute("INSERT INTO tasks(id,parent_id,sibling_order,record_json,original_json,source_path_json,archive_reason) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,sibling_order=excluded.sibling_order,record_json=excluded.record_json,archive_reason=excluded.archive_reason",
                        (t["id"], t["parent_id"], t["sibling_order"], _json(t["record"]),
                         _json(t["original_record"]), _json(t["source_path"]) if t["source_path"] is not None else None, t["archive_reason"]))
         db.execute("DELETE FROM task_links")
         db.executemany("INSERT INTO task_links VALUES(:source_id,:target_id,:kind,:rationale,:review_state)", links)
+        roadmap_schema.sync_tasks(db, project_id=project_id)
 
     @staticmethod
     def _actor(actor):
@@ -371,7 +404,143 @@ class RoadmapStore:
             return {"name": _text(actor["name"], "actor", 120), "kind": actor["kind"]}
         raise StoreError(400, "Actor requires name and human/agent kind")
 
-    def transact(self, expected_revision, request_id, actor, operations):
+    def read_v1(self, resource, project_id=None, **options):
+        with self._connection() as db:
+            db.execute("BEGIN")
+            try:
+                if resource in roadmap_research.RESOURCES:
+                    return roadmap_research.read(db, resource, project_id, **options)
+                if resource in roadmap_matcher.RESOURCES:
+                    return roadmap_matcher.read(db, resource, project_id, **options)
+                if resource in roadmap_documents.RESOURCES:
+                    return roadmap_documents.read(db, resource, project_id, **options)
+                return roadmap_projection.read_projection(db, resource, project_id, **options)
+            finally:
+                db.rollback()
+
+    def variable_registry_snapshot(self):
+        """Compatibility document and task revision from the same SQL snapshot."""
+        with self._connection() as db:
+            db.execute("BEGIN")
+            try:
+                project = roadmap_schema.default_project(db)
+                return roadmap_research.export_variable_registry(db, project), self._snapshot(db)
+            finally:
+                db.rollback()
+
+    def process_jobs(self, project_id, limit=100):
+        """Service-owned atomic matcher page. Cursor-only acks do not stale drafts."""
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                roadmap_projection._coverage(db, project_id)
+                result = roadmap_matcher.process_jobs(db, project_id, limit)
+                if result['new_hints'] or result.get('stale_hints'):
+                    request_id = 'matcher:' + str(uuid.uuid4())
+                    principal = roadmap_schema.principal_for_label(db, project_id, 'workspace matcher')
+                    db.execute("UPDATE store_meta SET revision=revision+1")
+                    db.execute("INSERT INTO workspace_events(id,project_id,request_id,actor_id,entity_type,entity_id,kind,after_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (str(uuid.uuid4()),project_id,request_id,principal,'matcher_jobs',project_id,'matcher_results',_json(result),datetime.now(timezone.utc).isoformat()))
+                    db.execute("INSERT INTO transactions VALUES(?,?,?)",(request_id,hashlib.sha256(_json(result).encode()).hexdigest(),_json(result)))
+                db.commit()
+                return result
+            except Exception:
+                db.rollback()
+                raise
+
+    def preview_variable_registry(self, payload):
+        if not isinstance(payload, dict) or set(payload) != {"project_id", "document", "source_hash"}:
+            raise StoreError(400, "Expected project_id, document and source_hash")
+        with self._connection() as db:
+            db.execute("BEGIN")
+            try:
+                roadmap_projection._coverage(db, payload["project_id"])
+                preview = roadmap_research.import_variable_registry(db, payload["project_id"],
+                    payload["document"], payload["source_hash"], dry_run=True)
+                return {"api_version":roadmap_projection.API_VERSION,"project_id":payload["project_id"],
+                        "revision":self._revision(self._meta(db)),"preview":preview}
+            finally:
+                db.rollback()
+
+    def transact_v1(self, payload):
+        """Scoped adapter, retaining the existing single global CAS transaction."""
+        required = {"project_id", "actor", "request_id", "expected_revision", "operations"}
+        if not isinstance(payload, dict) or set(payload) != required:
+            raise StoreError(400, "Expected project_id, actor, request_id, expected_revision, operations")
+        _text(payload["request_id"], "request ID", 200)
+        if payload["request_id"].startswith("migration:"):
+            raise StoreError(400, "Reserved request ID")
+        if not isinstance(payload["expected_revision"], str):
+            raise StoreError(400, "Expected revision required")
+        actor = payload["actor"]
+        if not isinstance(actor, dict) or set(actor) - {"principal_id", "session_id"} or not isinstance(actor.get("principal_id"), str):
+            raise StoreError(400, "Actor requires stable principal_id and optional session_id")
+        if actor.get("session_id") is not None:
+            _text(actor["session_id"], "session ID", 200)
+        if not isinstance(payload["operations"], list) or not 1 <= len(payload["operations"]) <= 500:
+            raise StoreError(400, "Expected 1–500 operations")
+        with self._connection() as db:
+            project = payload["project_id"]
+            if not isinstance(project, str) or not db.execute("SELECT 1 FROM projects WHERE id=?", (project,)).fetchone():
+                raise StoreError(404, "Scoped project not found")
+            principal = db.execute("SELECT p.*,m.capabilities_json FROM principals p JOIN project_members m ON m.principal_id=p.id WHERE m.project_id=? AND p.id=? AND p.archived_at IS NULL", (project, actor["principal_id"])).fetchone()
+            if principal is None:
+                raise StoreError(403, "Principal lacks project membership")
+            if "contribute" not in json.loads(principal["capabilities_json"]):
+                raise StoreError(403, "Principal lacks contribute capability")
+            if actor.get("session_id") is not None and not db.execute("SELECT 1 FROM agent_sessions WHERE id=? AND principal_id=?", (actor["session_id"], actor["principal_id"])).fetchone():
+                raise StoreError(403, "Session does not belong to principal")
+            prior = db.execute("SELECT * FROM transactions WHERE request_id=?", (payload["request_id"],)).fetchone()
+            if prior:
+                digest = hashlib.sha256(_json({"v1": payload}).encode()).hexdigest()
+                if digest != prior["payload_digest"]:
+                    raise StoreError(409, "Request ID reused with different payload")
+                return json.loads(prior["result_json"])
+            operations = _copy(payload["operations"])
+            local_creates = {}
+            for op in operations:
+                if not isinstance(op, dict):
+                    raise StoreError(400, "Invalid operation")
+                if op.get("op") in roadmap_research.OPS | roadmap_matcher.OPS | roadmap_documents.OPS | {"process_jobs"}:
+                    continue
+                if op.get("op") == "create":
+                    record = op.get("record")
+                    if not isinstance(record, dict) or "id" in record:
+                        raise StoreError(400, "v1 create requires record without id and optional alias")
+                    alias = op.pop("alias", None) or "task-" + uuid.uuid4().hex
+                    _id(alias)
+                    if db.execute("SELECT 1 FROM entity_aliases WHERE project_id=? AND entity_type='task' AND alias=?", (project, alias)).fetchone():
+                        raise StoreError(409, "Task alias is never reused")
+                    # Legacy storage keys remain global; public aliases are scoped.
+                    legacy = alias if not db.execute("SELECT 1 FROM tasks WHERE id=?", (alias,)).fetchone() else "task-" + uuid.uuid4().hex
+                    record["id"] = legacy
+                    local_creates[alias] = legacy
+                if op.get("op") == "update" and isinstance(op.get("fields"), dict) and set(op["fields"]) & {"id", "acceptance_gate_passed"}:
+                    raise StoreError(400, "Identity and validated acceptance are not editable v1 fields")
+                for field in ("task_id", "parent_id", "target_id"):
+                    if op.get(field) is not None:
+                        key = op[field]
+                        _text(key, "task reference", 200)
+                        if key in local_creates:
+                            op[field] = local_creates[key]
+                        else:
+                            uid = roadmap_projection.resolve_entity(db, project, "task", key)
+                            op[field] = db.execute("SELECT id FROM tasks WHERE project_id=? AND uid=?", (project, uid)).fetchone()[0]
+                record_fields = op.get("fields") if op.get("op") == "update" else op.get("record")
+                if isinstance(record_fields, dict) and "dependencies" in record_fields:
+                    if not isinstance(record_fields["dependencies"], list):
+                        raise StoreError(400, "Dependencies must be task IDs")
+                    converted = []
+                    for key in record_fields["dependencies"]:
+                        _text(key, "dependency reference", 200)
+                        uid = roadmap_projection.resolve_entity(db, project, "task", key)
+                        converted.append(db.execute("SELECT id FROM tasks WHERE project_id=? AND uid=?", (project, uid)).fetchone()[0])
+                    record_fields["dependencies"] = converted
+        return self.transact(payload["expected_revision"], payload["request_id"],
+                             {"name": principal["label"], "kind": "agent"}, operations,
+                             _workspace={"payload": payload, "aliases": local_creates})
+
+    def transact(self, expected_revision, request_id, actor, operations, *, _workspace=None):
         actor = self._actor(actor)
         _text(request_id, "request ID", 200)
         if request_id.startswith("migration:"):
@@ -380,7 +549,7 @@ class RoadmapStore:
             raise StoreError(400, "Expected revision required")
         if not isinstance(operations, list) or not operations or len(operations) > 10000:
             raise StoreError(400, "Expected 1–10000 operations")
-        payload = _json({"expected_revision": expected_revision, "actor": actor, "operations": operations})
+        payload = _json({"v1": _workspace["payload"]} if _workspace else {"expected_revision": expected_revision, "actor": actor, "operations": operations})
         if len(payload.encode("utf-8")) > 8_000_000:
             raise StoreError(400, "Transaction exceeds 8 MB")
         digest = hashlib.sha256(payload.encode()).hexdigest()
@@ -398,7 +567,28 @@ class RoadmapStore:
                 tasks, links = self._state(db)
                 before = _copy(tasks)
                 event_data = []
+                research_changes = []
+                task_operations = []
                 for operation in operations:
+                    if _workspace and isinstance(operation, dict) and operation.get("op") in roadmap_research.OPS | roadmap_matcher.OPS | roadmap_documents.OPS | {"process_jobs"}:
+                        project = _workspace["payload"]["project_id"]
+                        principal = _workspace["payload"]["actor"]["principal_id"]
+                        try:
+                            if operation["op"] in roadmap_research.OPS:
+                                change = roadmap_research.apply_operation(db, project, principal, operation, request_id)
+                            elif operation["op"] in roadmap_documents.OPS:
+                                change = roadmap_documents.apply_operation(db, project, principal, operation, request_id)
+                            else:
+                                change = ({"type":"matcher_jobs","id":project,**roadmap_matcher.process_jobs(db, project, operation.get("limit",100))}
+                                          if operation["op"] == "process_jobs" else
+                                          roadmap_matcher.apply_operation(db, project, principal, operation, request_id))
+                                db.execute("INSERT INTO workspace_events(id,project_id,request_id,actor_id,entity_type,entity_id,kind,after_json,rationale,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                    (str(uuid.uuid4()),project,request_id,principal,change["type"],change["id"],operation["op"],_json(change),operation.get("reason"),datetime.now(timezone.utc).isoformat()))
+                        except sqlite3.IntegrityError as exc:
+                            raise StoreError(409,"Research identity or relationship conflicts with existing history") from exc
+                        research_changes.append(change)
+                        continue
+                    task_operations.append(operation)
                     if isinstance(operation, dict) and operation.get("op") == "journal" and "supersedes" in operation:
                         supersedes = _text(operation["supersedes"], "superseded event ID", 100)
                         previous = db.execute("SELECT task_id FROM events WHERE event_id=?", (supersedes,)).fetchone()
@@ -406,12 +596,33 @@ class RoadmapStore:
                             raise StoreError(400, "Correction must reference an existing event on the same task")
                     event_data.append(self._operate(tasks, links, operation, actor))
                 self._validate(tasks, links)
-                self._gates(before, tasks, links, operations)
-                self._write_state(db, tasks, links)
+                self._gates(before, tasks, links, task_operations)
+                self._write_state(db, tasks, links, project_id=_workspace["payload"]["project_id"] if _workspace else None)
+                if _workspace:
+                    project = _workspace["payload"]["project_id"]
+                    for alias, legacy in _workspace["aliases"].items():
+                        row = db.execute("SELECT uid FROM tasks WHERE id=?", (legacy,)).fetchone()
+                        if alias != legacy:
+                            db.execute("INSERT INTO entity_aliases VALUES(?,'task',?,?)", (project, alias, row["uid"]))
+                roadmap_schema.sync_tasks(db, before=before)
+                recorded_at = datetime.now(timezone.utc).isoformat()
+                for task_id in set(tasks) - set(before):
+                    row = db.execute("SELECT project_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+                    principal_id = (_workspace["payload"]["actor"]["principal_id"] if _workspace else
+                                    roadmap_schema.principal_for_label(db, row["project_id"], actor["name"]))
+                    db.execute("UPDATE tasks SET created_by=?,created_at=?,updated_at=? WHERE id=?",
+                               (principal_id, recorded_at, recorded_at, task_id))
                 for task_id, kind, details in event_data:
-                    self._event(db, request_id, task_id, actor, kind, details)
+                    self._event(db, request_id, task_id, actor, kind, details,
+                                principal_id=_workspace["payload"]["actor"]["principal_id"] if _workspace else None)
                 db.execute("UPDATE store_meta SET revision=revision+1")
                 result = self._snapshot(db)
+                if _workspace:
+                    changed = list(dict.fromkeys(item[0] for item in event_data if item[0]))
+                    result = {"revision": result["revision"], "event_cursor": roadmap_projection._event_cursor(db, project),
+                              "changed_records": [{"type": "task", "id": row["uid"], "record_revision": row["revision"]}
+                                  for task_id in changed for row in db.execute("SELECT uid,revision FROM tasks WHERE id=?", (task_id,))] + research_changes,
+                              "request_id": request_id}
                 db.execute("INSERT INTO transactions VALUES(?,?,?)", (request_id, digest, _json(result)))
                 db.commit()
                 return result

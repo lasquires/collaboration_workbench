@@ -38,8 +38,8 @@ class TaskGraphTests(unittest.TestCase):
         self.assertEqual(first["nodes"][-1]["id"], "island")
         self.assertEqual(sum(edge["type"] == "contains" for edge in first["edges"]), 1200)
 
-    def test_current_board_projection_preserves_all_source_records(self):
-        board = Path("docs/BOARD.md").read_text(encoding="utf-8")
+    def test_archived_legacy_task_block_projection_preserves_all_source_records(self):
+        board = Path("docs/journal/BOARD-HISTORY-2026-11-12.md").read_text(encoding="utf-8")
         start = "<!-- ROADMAP_TASK_RECORDS:START -->"
         end = "<!-- ROADMAP_TASK_RECORDS:END -->"
         records = json.loads(board.split(start, 1)[1].split(end, 1)[0])
