@@ -205,4 +205,15 @@ assert.match(graphHtml, /await expandNeighborhood\(id,false\);fitCurrent\(\)/, '
 assert.match(graphHtml, /ctx\.fields/);
 assert.match(graphHtml, /ctx\.reservations/);
 assert.match(graphHtml, /Load next page/);
-console.log('task graph UI fixture checks passed');
+(async()=>{
+  const scope={projectId:'empty-project',rootItems:[],taskCursor:null,focusRoot:null,graph:null,
+    URLSearchParams,initialRoot:model.initialRoot,projectSnapshot:model.projectSnapshot,
+    apiJson:async()=>({items:[],next_cursor:null,revision:'store:0',coverage:{complete:false}}),
+    renderRoots:()=>{},render:()=>{},notice:message=>{scope.message=message}};
+  vm.runInNewContext(source.slice(source.indexOf('async function loadRootPage('),
+    source.indexOf('function renderRoots()')),scope);
+  await scope.loadRootPage();
+  assert.equal(scope.graph?.revision,'store:0','empty project still initializes a writable scoped snapshot');
+  assert.match(scope.message,/No tasks|No island roots/,'empty project has an actionable message instead of perpetual loading');
+  console.log('task graph UI fixture checks passed');
+})().catch(error=>{console.error(error);process.exitCode=1});

@@ -11,3 +11,7 @@ commit hashes while preserving the selected paths' relevant authorship/history.
 The source checkout and its live database were left in place. Native binaries,
 game assets, original application packages and SQLite/WAL state were not exported.
 Migration of the existing research data is a separate backed-up acceptance step.
+
+Standalone compatibility testing identified an additional runtime dependency,
+`tools/task_graph.py`. It was copied byte-for-byte from the same source commit;
+its source SHA-256 is `aeca4ba603a1ab66e291fdb8a5ce6b9ebc998a02def7ac83c7c133eb7ee27fcd`.

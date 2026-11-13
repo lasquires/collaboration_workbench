@@ -195,7 +195,7 @@ def workspace_read(parsed):
         if set(options)-{'task_id','limit','cursor','order','state'}:
             raise RoadmapError(400,'Unsupported collaboration read parameter')
         return _store().read_v1(path[1],project_id,**options)
-    if len(path) == 2 and path[1] in {"tasks", "events", "artifacts", "artifact-versions", "index-runs", "occurrences", "observations", "questions", "negative-searches", "findings", "hints", "subscriptions", "inbox", "processing-status", "replay-jobs", "documents", "document-versions", "discussions", "proposals", "feedback"}:
+    if len(path) == 2 and path[1] in {"tasks", "events", "artifacts", "artifact-versions", "index-runs", "occurrences", "observations", "questions", "negative-searches", "findings", "hints", "subscriptions", "inbox", "processing-status", "replay-jobs", "documents", "document-versions", "discussions", "proposals", "feedback", "repositories"}:
         resource = path[1]
     elif len(path) == 4 and path[1] == "tasks" and path[3] in {"context", "neighborhood", "history"}:
         resource = path[3]
@@ -405,7 +405,7 @@ def checkpoint_before_upgrade(path):
         version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return None
-    if version not in (1, 2, 3):
+    if version not in (1, 2, 3, 4):
         raise RoadmapError(503, 'Unsupported task database schema; no migration attempted')
     from migrate_roadmap import backup_database
     def file_hash(target):
@@ -463,7 +463,7 @@ def main(argv=None):
             _store(selected_store).snapshot()
             server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
             stop, worker = start_matcher_worker(selected_store)
-            print(f"SSG2 roadmap at http://127.0.0.1:{args.port}/ (store: {selected_store})")
+            print(f"Research Workspace at http://127.0.0.1:{args.port}/ (store: {selected_store})")
             try: server.serve_forever()
             except KeyboardInterrupt: pass
             finally:

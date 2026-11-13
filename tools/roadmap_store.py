@@ -17,9 +17,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure
+    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects
 except ImportError:
-    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure
+    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects
 
 SCHEMA_VERSION = 1
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
@@ -127,7 +127,7 @@ CREATE TRIGGER immutable_transaction_delete BEFORE DELETE ON transactions BEGIN 
 
 
 class RoadmapStore:
-    def __init__(self, path):
+    def __init__(self, path, *, bootstrap_slug="ssg2"):
         self.path = Path(path)
         if str(path) == ":memory:":
             raise StoreError(400, "Use a filesystem database; connections are per operation")
@@ -145,7 +145,7 @@ class RoadmapStore:
                     db.rollback()
                     raise
             try:
-                roadmap_schema.migrate(db, fresh=not names)
+                roadmap_schema.migrate(db, fresh=not names, bootstrap_slug=bootstrap_slug)
             except ValueError as exc:
                 raise StoreError(503, str(exc)) from exc
             self._meta(db)
@@ -415,6 +415,8 @@ class RoadmapStore:
                     return roadmap_matcher.read(db, resource, project_id, **options)
                 if resource in roadmap_documents.RESOURCES:
                     return roadmap_documents.read(db, resource, project_id, **options)
+                if resource == 'repositories':
+                    return roadmap_projects.read(db,project_id)
                 if resource in roadmap_structure.RESOURCES:
                     return roadmap_structure.read(db, resource, project_id, **options)
                 return roadmap_projection.read_projection(db, resource, project_id, **options)
@@ -550,7 +552,7 @@ class RoadmapStore:
                         if isinstance(op.get(field),str) and op[field] in local_creates:
                             op[field] = local_creates[op[field]]
                     continue
-                if op.get("op") in roadmap_research.OPS | roadmap_matcher.OPS | roadmap_documents.OPS | {"process_jobs"}:
+                if op.get("op") in roadmap_research.OPS | roadmap_matcher.OPS | roadmap_documents.OPS | roadmap_projects.OPS | {"process_jobs"}:
                     continue
                 if op.get("op") == "create":
                     record = op.get("record")
@@ -637,11 +639,13 @@ class RoadmapStore:
                             validated_tasks.add(change['legacy_id'])
                         research_changes.append(change)
                         continue
-                    if _workspace and isinstance(operation, dict) and operation.get("op") in roadmap_research.OPS | roadmap_matcher.OPS | roadmap_documents.OPS | {"process_jobs"}:
+                    if _workspace and isinstance(operation, dict) and operation.get("op") in roadmap_research.OPS | roadmap_matcher.OPS | roadmap_documents.OPS | roadmap_projects.OPS | {"process_jobs"}:
                         project = _workspace["payload"]["project_id"]
                         principal = _workspace["payload"]["actor"]["principal_id"]
                         try:
-                            if operation["op"] in roadmap_research.OPS:
+                            if operation["op"] in roadmap_projects.OPS:
+                                change = roadmap_projects.apply_operation(db, project, principal, operation, request_id)
+                            elif operation["op"] in roadmap_research.OPS:
                                 change = roadmap_research.apply_operation(db, project, principal, operation, request_id)
                             elif operation["op"] in roadmap_documents.OPS:
                                 change = roadmap_documents.apply_operation(db, project, principal, operation, request_id)

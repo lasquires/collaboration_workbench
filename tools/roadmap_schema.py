@@ -7,7 +7,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 FOUNDATION_DDL = [
     "CREATE TABLE projects(id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, goal TEXT NOT NULL DEFAULT '', acceptance_json TEXT NOT NULL DEFAULT '[]', entry_documents_json TEXT NOT NULL DEFAULT '[]', coverage_json TEXT NOT NULL DEFAULT '{}', revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1), created_by TEXT, created_at TEXT, updated_at TEXT, archived_at TEXT)",
@@ -45,7 +45,7 @@ def principal_for_label(db, project_id, label):
 
 
 def default_project(db):
-    return db.execute("SELECT id FROM projects WHERE slug='ssg2'").fetchone()[0]
+    return db.execute("SELECT id FROM projects ORDER BY CASE slug WHEN 'workspace' THEN 0 WHEN 'ssg2' THEN 1 ELSE 2 END,id LIMIT 1").fetchone()[0]
 
 
 def _migration_checkpoint(db):
@@ -93,11 +93,11 @@ def sync_tasks(db, *, project_id=None, before=None, mirror_containment=True):
 
 
 
-def migrate(db, *, fresh=False):
+def migrate(db, *, fresh=False, bootstrap_slug="ssg2"):
     version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return
-    if version not in (1, 2, 3):
+    if version not in (1, 2, 3, 4):
         raise ValueError('Unsupported task database schema')
     db.execute('BEGIN IMMEDIATE')
     try:
@@ -118,7 +118,10 @@ def migrate(db, *, fresh=False):
             for statement in FOUNDATION_DDL:
                 db.execute(statement)
             project = str(uuid.uuid5(uuid.NAMESPACE_URL, 'ssg2-workspace:' + meta['store_id']))
-            db.execute("INSERT INTO projects(id,slug,goal,coverage_json) VALUES(?,'ssg2','Restore original SSG2 single-player experience',?)", (project,json.dumps({'source':'legacy task import','complete':False,'uncovered':['historical tasks not imported','research collections']})))
+            slug=bootstrap_slug if fresh else 'ssg2'
+            if not isinstance(slug,str) or not slug or len(slug)>80: raise ValueError('Invalid bootstrap project slug')
+            goal='Restore original SSG2 single-player experience' if slug=='ssg2' else 'Research workspace'
+            db.execute("INSERT INTO projects(id,slug,goal,coverage_json) VALUES(?,?,?,?)", (project,slug,goal,json.dumps({'source':'legacy task import' if slug=='ssg2' else 'empty workspace','complete':False,'uncovered':['research collections']})))
             principal_for_label(db,project,'local')
             sync_tasks(db,project_id=project)
         try:
@@ -129,8 +132,13 @@ def migrate(db, *, fresh=False):
             roadmap_research.create_schema(db)
             roadmap_matcher.create_schema(db)
             roadmap_documents.create_schema(db)
-        roadmap_structure.create_schema(db)
+        if version <= 3: roadmap_structure.create_schema(db)
         roadmap_exchange.create_schema(db)
+        try:
+            from . import roadmap_projects
+        except ImportError:
+            import roadmap_projects
+        roadmap_projects.create_schema(db)
         _migration_checkpoint(db)
         db.execute('UPDATE store_meta SET schema_version=?,revision=revision+?', (SCHEMA_VERSION,0 if fresh else 1))
         if db.execute('PRAGMA foreign_key_check').fetchone():

@@ -1,9 +1,12 @@
 import copy
 import json
+import os
 import unittest
 from pathlib import Path
 
 from tools.task_graph import project_tasks
+
+LEGACY_ARCHIVE=Path(os.environ.get("RESEARCH_WORKSPACE_LEGACY_ARCHIVE", "docs/journal/BOARD-HISTORY-2026-11-12.md"))
 
 
 class TaskGraphTests(unittest.TestCase):
@@ -38,8 +41,9 @@ class TaskGraphTests(unittest.TestCase):
         self.assertEqual(first["nodes"][-1]["id"], "island")
         self.assertEqual(sum(edge["type"] == "contains" for edge in first["edges"]), 1200)
 
+    @unittest.skipUnless(LEGACY_ARCHIVE.is_file(), "Optional source-project archive fixture is not installed")
     def test_archived_legacy_task_block_projection_preserves_all_source_records(self):
-        board = Path("docs/journal/BOARD-HISTORY-2026-11-12.md").read_text(encoding="utf-8")
+        board = LEGACY_ARCHIVE.read_text(encoding="utf-8")
         start = "<!-- ROADMAP_TASK_RECORDS:START -->"
         end = "<!-- ROADMAP_TASK_RECORDS:END -->"
         records = json.loads(board.split(start, 1)[1].split(end, 1)[0])
