@@ -221,13 +221,21 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
             from roadmap_structure import redirect_group
         legacy=[rows[identity]['id'] for identity in redirect_group(db,project_id,uid)]
         marks=','.join('?' for _ in legacy)
-        events=list(db.execute(f'SELECT * FROM events WHERE task_id IN ({marks}) ORDER BY sequence DESC LIMIT ? OFFSET ?', (*legacy,limit+1,offset)))
+        events=list(db.execute(f"""SELECT e.sequence,e.event_id,e.request_id,e.task_id,e.actor_json,e.recorded_at,e.historical_at,e.kind,e.details_json,NULL AS origin_store_id,NULL AS source_sha256,NULL AS created_by
+            FROM events e WHERE e.task_id IN ({marks})
+            UNION ALL
+            SELECT json_extract(j.source_event_json,'$.sequence'),j.id,json_extract(j.source_event_json,'$.request_id'),t.id,json_extract(j.source_event_json,'$.actor_json'),j.recorded_at,j.historical_at,j.kind,j.details_json,j.origin_store_id,j.source_sha256,j.created_by
+            FROM task_journal_entries j JOIN tasks t ON t.project_id=j.project_id AND t.uid=j.task_id
+            WHERE j.project_id=? AND t.id IN ({marks}) AND NOT EXISTS(SELECT 1 FROM events e WHERE e.event_id=j.id)
+            ORDER BY recorded_at DESC,sequence DESC,event_id DESC LIMIT ? OFFSET ?""",(*legacy,project_id,*legacy,limit+1,offset)))
         items=[]
         for event in events[:limit]:
             item=dict(event)
             item['actor']=json.loads(item.pop('actor_json')) if item['actor_json'] else None
             item['details']=json.loads(item.pop('details_json'))
-            item['source']='legacy-compatible task audit'
+            origin=item.pop('origin_store_id');source_hash=item.pop('source_sha256');principal=item.pop('created_by')
+            item['source']='shared task journal' if origin else 'legacy-compatible task audit'
+            if origin:item['provenance']={'origin_store_id':origin,'source_sha256':source_hash,'principal_id':principal,'attribution':'source event; not an authentication grant'}
             item['original_task_id']=next(identity for identity in rows if rows[identity]['id']==item['task_id'])
             item['task_id']=uid
             items.append(item)

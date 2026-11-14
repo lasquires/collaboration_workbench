@@ -72,5 +72,6 @@ A successful repository connection alone does not establish synchronized researc
 
 Snapshot synchronization does not transfer active claims as shared leases. Local
 clients report local-only claims; use the host directly for shared coordination.
-Full journal text sharing remains under development, even when portable event
-metadata and record synchronization report current.
+Task journals share their full text, evidence and correction links as immutable
+records in schema 9. Read them with the scoped task history/context endpoints;
+imported author labels are provenance, not authentication grants.

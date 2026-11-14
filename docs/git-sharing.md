@@ -65,3 +65,28 @@ from timestamps. A remote binding change stops sharing until setup is reviewed.
 Git-only sharing also serves as fallback for an unavailable configured live host.
 See [live hosting](self-hosting.md) for backend configuration, conflict review,
 and the remaining UI and shared-claim boundaries.
+
+## Task journal history
+
+Schema 9 adds immutable task journal records to portable exchange. Observation,
+attempt, blocker, review and handoff entries carry the exact text and structured
+evidence, boundary/outcome fields and correction references. Task history and
+context include imported entries alongside local audit history without duplicates.
+The original event JSON, its SHA-256 and installation identity remain available in
+the exported record. Local events and their payloads are never rewritten.
+
+Corrections append another entry referencing the original event ID. They do not
+replace the original. An incompatible reuse of an immutable journal identity
+requires a new identity; choosing the remote alternative cannot rewrite it.
+Imported labels do not create memberships or capabilities. Claims remain local.
+
+Upgrade all collaborators to the current app before exchanging the new schema.
+The new app can read previous snapshots that omit the journal table; their hashes
+and raw JSON remain unchanged. Historical journal entries can be recovered from
+the installation that still holds their original local event log. A digest-only
+snapshot cannot reconstruct text it never included.
+
+Existing portable path checks also apply to journal text. If an entry includes a
+machine-specific absolute path, automatic sharing pauses for explicit review;
+it does not silently redact or alter the original note. Use repository-relative
+evidence references in new shared notes.

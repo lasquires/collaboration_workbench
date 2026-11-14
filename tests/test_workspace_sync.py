@@ -55,6 +55,7 @@ class WorkspaceSyncTests(unittest.TestCase):
         self.syncs[0].sync_now(); self.syncs[1].sync_now()
         operations = [
             {'op': 'create', 'alias': 'sync-task', 'record': {'title': 'Shared task', 'status': 'ready'}},
+            {'op': 'journal', 'task_id': 'sync-task', 'kind': 'handoff', 'text': 'Keep the measured result.', 'evidence': ['docs/probe.md']},
             {'op': 'create_question', 'id': 'sync-question', 'text': 'What changed?'},
             {'op': 'create_document', 'id': 'sync-doc', 'kind': 'guide', 'title': 'Shared guide',
              'authority_kind': 'service_body', 'body': 'Shared text'},
@@ -69,6 +70,11 @@ class WorkspaceSyncTests(unittest.TestCase):
             self.assertIsNotNone(db.execute("SELECT 1 FROM tasks WHERE id='sync-task'").fetchone())
             self.assertIsNotNone(db.execute("SELECT 1 FROM questions WHERE id='sync-question'").fetchone())
             self.assertIsNotNone(db.execute("SELECT 1 FROM documents WHERE id='sync-doc'").fetchone())
+        history=self.stores[1].read_v1('history',self.project,key='sync-task')['items']
+        note=next(entry for entry in history if entry['kind']=='handoff')
+        self.assertEqual(note['details'],{'text':'Keep the measured result.','evidence':['docs/probe.md']})
+        self.assertEqual(note['source'],'shared task journal')
+
     def test_same_field_conflict_keeps_local_and_remote(self):
         self.syncs[0].sync_now(); self.syncs[1].sync_now()
         self.change_title(0, 'Left'); self.change_title(1, 'Right')

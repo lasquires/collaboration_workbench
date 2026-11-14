@@ -66,6 +66,17 @@ class LiveClientTests(unittest.TestCase):
         self.assertEqual({r['id'] for r in self.host.read_v1('questions',self.project)['items']},{'left','right'})
         self.assertEqual({r['id'] for r in first.store.read_v1('questions',self.project)['items']},{'left','right'})
 
+    def test_journal_text_reaches_host_and_an_independent_live_client(self):
+        source=self.stores[1]
+        source.transact_v1({'project_id':self.project,'actor':{'principal_id':self.actors[1]},'request_id':'live-journal','expected_revision':source.snapshot()['revision'],'operations':[{'op':'create','alias':'live-task','record':{'title':'Shared journal','status':'ready'}},{'op':'journal','task_id':'live-task','kind':'observation','text':'The measured result is still provisional.','evidence':['docs/probe.md']}]})
+        self.clients[0].sync_once();self.clients[1].sync_once()
+        for store in (self.host,self.stores[2]):
+            note=next(entry for entry in store.read_v1('history',self.project,key='live-task')['items'] if entry['kind']=='observation')
+            self.assertEqual(note['details']['text'],'The measured result is still provisional.')
+            self.assertEqual(note['details']['evidence'],['docs/probe.md'])
+            self.assertEqual(note['provenance']['principal_id'],self.actors[1])
+        self.assertEqual(self.clients[0].sync_once()['state'],'current')
+
     def test_lost_commit_reply_reuses_exact_request_and_does_not_duplicate_import(self):
         self.question(1,'uncertain','Was this committed?');self.lose_reply=True
         self.assertEqual(self.clients[0].sync_once()['state'],'offline')

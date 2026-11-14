@@ -96,5 +96,6 @@ are still being completed.
 Local-client claims remain **local-only**. Snapshot exchange does not create an
 acknowledged host lease. Use the host directly for shared claim coordination until
 lease relay is implemented. Portable event metadata preserves attribution and
-payload digests; full progress-journal text sharing is a separate unfinished gate.
+payload digests. Schema 9 also shares immutable task-journal text, evidence, and
+correction links through the same portable exchange.
 Enabling a listener or completing synchronization never verifies research claims.

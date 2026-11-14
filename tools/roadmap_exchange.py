@@ -16,8 +16,8 @@ except ImportError:
 
 OPS = {'register_exchange_snapshot', 'import_bundle'}
 RESOURCES = {'exchange'}
-TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals'.split())
-IMMUTABLE = set('principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches'.split())
+TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries'.split())
+IMMUTABLE = set('principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries'.split())
 canonical = research.canonical
 _PORTABLE_FORMAT = 'workbench-exchange'
 _PORTABLE_HISTORY = {'id','project_id','request_id','actor_id','entity_type','entity_id','kind','recorded_at','payload_sha256'}
@@ -50,7 +50,32 @@ def _retain_portable_history(db,project,events):
         db.execute('INSERT OR IGNORE INTO portable_event_history VALUES(?,?,?)',(project,event['id'],body))
 
 
+JOURNAL_KINDS = {'observation','attempt','blocker','review','handoff'}
+
+
+def retain_task_journal(db, event_id, principal_id=None):
+    event=db.execute('SELECT * FROM events WHERE event_id=?',(event_id,)).fetchone()
+    if event is None or event['kind'] not in JOURNAL_KINDS:return
+    task=db.execute('SELECT uid,project_id FROM tasks WHERE id=?',(event['task_id'],)).fetchone()
+    if task is None:return
+    raw=dict(event)
+    origin=db.execute('SELECT store_id FROM store_meta').fetchone()[0]
+    db.execute('INSERT OR IGNORE INTO task_journal_entries VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+        (event_id,task['project_id'],task['uid'],principal_id,event['kind'],event['recorded_at'],
+         event['historical_at'],event['details_json'],origin,canonical(raw),research.digest(raw)))
+
+
 def create_schema(db):
+    db.execute('CREATE TABLE IF NOT EXISTS task_journal_entries(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),task_id TEXT NOT NULL,created_by TEXT REFERENCES principals(id),kind TEXT NOT NULL,recorded_at TEXT NOT NULL,historical_at TEXT,details_json TEXT NOT NULL,origin_store_id TEXT NOT NULL,source_event_json TEXT NOT NULL,source_sha256 TEXT NOT NULL,FOREIGN KEY(project_id,task_id) REFERENCES tasks(project_id,uid))')
+    db.execute('CREATE INDEX IF NOT EXISTS task_journal_history ON task_journal_entries(project_id,task_id,recorded_at,id)')
+    for action in ('UPDATE','DELETE'):
+        db.execute(f"CREATE TRIGGER IF NOT EXISTS task_journal_entries_{action.lower()} BEFORE {action} ON task_journal_entries BEGIN SELECT RAISE(ABORT,'task journals are immutable'); END")
+    for event in db.execute('SELECT e.event_id,e.actor_json,e.request_id,t.project_id,t.uid FROM events e JOIN tasks t ON t.id=e.task_id WHERE e.kind IN (?,?,?,?,?)',tuple(sorted(JOURNAL_KINDS))).fetchall():
+        if db.execute('SELECT 1 FROM task_journal_entries WHERE id=?',(event[0],)).fetchone():continue
+        known=db.execute("SELECT actor_id FROM workspace_events WHERE project_id=? AND request_id=? AND entity_type='task' AND entity_id=? AND actor_id IS NOT NULL ORDER BY sequence LIMIT 1",(event[3],event[2],event[4])).fetchone()
+        # Preserve authenticated event attribution when available. A historical
+        # display label must never create membership or confer capabilities.
+        retain_task_journal(db,event[0],known[0] if known else None)
     db.execute('CREATE TABLE IF NOT EXISTS exchange_snapshots(project_id TEXT NOT NULL REFERENCES projects(id),id TEXT NOT NULL,bundle_json TEXT NOT NULL,PRIMARY KEY(project_id,id))')
     db.execute('CREATE TABLE IF NOT EXISTS exchange_imports(project_id TEXT NOT NULL REFERENCES projects(id),id TEXT NOT NULL,result_json TEXT NOT NULL,PRIMARY KEY(project_id,id))')
     db.execute('CREATE TABLE IF NOT EXISTS portable_event_history(project_id TEXT NOT NULL REFERENCES projects(id),id TEXT NOT NULL,body_json TEXT NOT NULL,PRIMARY KEY(project_id,id))')
@@ -151,9 +176,9 @@ def _validate(db, project, bundle):
         research.error(400,'Exchange content hash mismatch')
     portable=(bundle['format'],bundle['version'])==(_PORTABLE_FORMAT,2)
     if ((not portable and (bundle['format'],bundle['version'])!=('ssg2-exchange',1))
-            or bundle['project_id']!=project or bundle['schema']!=_schema(db)):
+            or bundle['project_id']!=project or bundle['schema'] not in (_schema(db),{key:value for key,value in _schema(db).items() if key!='task_journal_entries'})):
         research.error(409,'Exchange project or schema mismatch')
-    if set(bundle['records'])!=set(TABLES):
+    if set(bundle['records'])!=set(bundle['schema']):
         research.error(400,'Exchange table whitelist mismatch')
     if portable:
         if bundle['records']['artifact_blobs'] or not isinstance(bundle['history'],list) or any(not isinstance(e,dict) or set(e)!=_PORTABLE_HISTORY or not isinstance(e['payload_sha256'],str) or not re.fullmatch('[0-9a-f]{64}',e['payload_sha256']) for e in bundle['history']):
@@ -185,6 +210,20 @@ def _validate(db, project, bundle):
                 try: raw=base64.b64decode(row['body']['base64'],validate=True)
                 except (ValueError,KeyError,TypeError): research.error(400,'Invalid blob encoding')
                 if hashlib.sha256(raw).hexdigest()!=row['sha256']: research.error(400,'Artifact blob hash mismatch')
+            if table=='task_journal_entries':
+                try:
+                    source=json.loads(row['source_event_json']);details=json.loads(row['details_json'])
+                    actor=json.loads(source['actor_json']) if isinstance(source,dict) and source.get('actor_json') else None
+                    if (not isinstance(source,dict) or not isinstance(details,dict)
+                            or set(source)!={'sequence','event_id','request_id','task_id','actor_json','recorded_at','historical_at','kind','details_json'}
+                            or type(source.get('sequence')) is not int or source['sequence']<1
+                            or not isinstance(source.get('request_id'),str) or not isinstance(source.get('task_id'),str)
+                            or (actor is not None and (not isinstance(actor,dict) or set(actor)!={'name','kind'} or not isinstance(actor['name'],str) or actor['kind'] not in ('human','agent')))
+                            or source.get('event_id')!=row['id'] or source.get('kind')!=row['kind']
+                            or row['kind'] not in JOURNAL_KINDS or source.get('recorded_at')!=row['recorded_at']
+                            or source.get('historical_at')!=row['historical_at'] or source.get('details_json')!=row['details_json']
+                            or research.digest(source)!=row['source_sha256']):raise ValueError()
+                except (ValueError,TypeError,KeyError):research.error(400,'Journal source provenance mismatch')
             if table=='document_versions' and hashlib.sha256(row['body'].encode()).hexdigest()!=row['sha256']:
                 research.error(400,'Document hash mismatch')
             if table=='tasks' and any(k in json.loads(row['record_json']) for k in ('claim','reserved_paths','session_id','lease')):
@@ -215,7 +254,7 @@ def _validate(db, project, bundle):
 
 
 def _index(bundle,table):
-    return {_key(bundle['schema'],table,r):r for r in bundle['records'][table]}
+    return {_key(bundle['schema'],table,r):r for r in bundle['records'].get(table,[])}
 
 
 def _fields(row):

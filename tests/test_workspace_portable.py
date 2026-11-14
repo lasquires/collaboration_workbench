@@ -123,6 +123,78 @@ class PortableExchangeTests(unittest.TestCase):
         self.assertEqual(exported['history'],incoming['history'],'host reexport preserves original event digests and excludes its local import audit')
         self.assertEqual(exported,self.export(0))
 
+    def test_journal_text_evidence_and_correction_survive_portable_roundtrip(self):
+        source=self.stores[1]
+        def transact(request,operations):
+            return source.transact_v1({'project_id':self.project,'actor':{'principal_id':self.actors[1]},'request_id':request,'expected_revision':source.snapshot()['revision'],'operations':operations})
+        transact('journal-task',[{'op':'create','alias':'JOURNAL','record':{'title':'Shared progress','status':'ready'}}])
+        transact('journal-note',[{'op':'journal','task_id':'JOURNAL','kind':'observation','text':'Compared 3 samples; tolerance is 0.25.','evidence':['docs/probe.md'],'boundary':'native input','outcome':'inconclusive'}])
+        original=next(e for e in source.snapshot()['events'] if e['request_id']=='journal-note')
+        transact('journal-correction',[{'op':'journal','task_id':'JOURNAL','kind':'review','text':'Correction: 4 samples.','supersedes':original['event_id']}])
+        incoming=self.export(1)
+        entries=incoming['records']['task_journal_entries']
+        self.assertEqual(len(entries),2)
+        self.apply(0,incoming,'journal-import')
+        history=self.stores[0].read_v1('history',self.project,key='JOURNAL')['items']
+        notes={entry['event_id']:entry for entry in history if entry['kind'] in ('observation','review')}
+        self.assertEqual(notes[original['event_id']]['details'],original['details'])
+        self.assertEqual(notes[original['event_id']]['actor'],original['actor'])
+        self.assertEqual(notes[original['event_id']]['provenance']['origin_store_id'],source.snapshot()['store_id'])
+        self.assertTrue(any(e['details'].get('supersedes')==original['event_id'] for e in notes.values()))
+        exported=self.export(0)
+        self.assertEqual(exported['records']['task_journal_entries'],entries)
+        self.assertEqual(exported,self.export(0))
+        # A collaborator can correct imported history without forging the source entry.
+        self.stores[0].transact_v1({'project_id':self.project,'actor':{'principal_id':self.actors[0]},'request_id':'remote-correction','expected_revision':self.stores[0].snapshot()['revision'],'operations':[{'op':'journal','task_id':'JOURNAL','kind':'review','text':'Independent review pending.','supersedes':original['event_id']}]})
+        self.assertEqual(len(self.export(0)['records']['task_journal_entries']),3)
+
+    def test_previous_snapshot_without_journal_table_remains_a_valid_ancestor(self):
+        source=self.stores[1]
+        source.transact_v1({'project_id':self.project,'actor':{'principal_id':self.actors[1]},'request_id':'old-schema-note','expected_revision':source.snapshot()['revision'],'operations':[{'op':'create','alias':'OLD-JOURNAL','record':{'title':'Old snapshot','status':'ready'}},{'op':'journal','task_id':'OLD-JOURNAL','kind':'review','text':'Recover this from the original installation.'}]})
+        old=self.export(1)
+        old['records'].pop('task_journal_entries');old['schema'].pop('task_journal_entries')
+        old['id']=exchange.research.digest({key:value for key,value in old.items() if key!='id'})
+        self.apply(0,old,'old-schema-import')
+        self.assertEqual(self.stores[0].read_v1('history',self.project,key='OLD-JOURNAL')['items'],[])
+        source.transact_v1({'project_id':self.project,'actor':{'principal_id':self.actors[1]},'request_id':'old-schema-register','expected_revision':source.snapshot()['revision'],'operations':[{'op':'register_exchange_snapshot','bundle':old}]})
+        current=self.export(1,ancestor=old['id'])
+        self.apply(0,current,'new-schema-journal')
+        history=self.stores[0].read_v1('history',self.project,key='OLD-JOURNAL')['items']
+        self.assertEqual(history[0]['details']['text'],'Recover this from the original installation.')
+        with self.stores[0]._connection() as db:
+            saved=json.loads(db.execute('SELECT bundle_json FROM exchange_snapshots WHERE id=?',(old['id'],)).fetchone()[0])
+        self.assertEqual(saved,old)
+
+    def test_schema8_journal_backfill_preserves_raw_events_and_memberships(self):
+        source=self.stores[1]
+        source.transact_v1({'project_id':self.project,'actor':{'principal_id':self.actors[1]},'request_id':'backfill-task','expected_revision':source.snapshot()['revision'],'operations':[{'op':'create','alias':'BACKFILL','record':{'title':'Backfill','status':'ready'}},{'op':'journal','task_id':'BACKFILL','kind':'handoff','text':'Keep the original handoff.','evidence':['docs/evidence.md']}]})
+        raw=source.snapshot()['events']
+        with source._connection() as db:
+            memberships=[tuple(row) for row in db.execute('SELECT * FROM project_members')]
+            db.execute('DROP TABLE task_journal_entries')
+            db.execute('UPDATE store_meta SET schema_version=8')
+        reopened=RoadmapStore(source.path)
+        self.assertEqual(reopened.snapshot()['events'],raw)
+        with reopened._connection() as db:
+            self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM project_members')],memberships)
+            entry=dict(db.execute('SELECT * FROM task_journal_entries').fetchone())
+            self.assertEqual(entry['created_by'],self.actors[1])
+            original=json.loads(entry['source_event_json'])
+            self.assertEqual(original['event_id'],entry['id'])
+            self.assertEqual(json.loads(original['details_json'])['text'],'Keep the original handoff.')
+            self.assertEqual(entry['source_sha256'],exchange.research.digest(original))
+
+    def test_import_rejects_tampered_journal_content_without_writes(self):
+        source=self.stores[1]
+        source.transact_v1({'project_id':self.project,'actor':{'principal_id':self.actors[1]},'request_id':'tamper-journal','expected_revision':source.snapshot()['revision'],'operations':[{'op':'create','alias':'TAMPER','record':{'title':'Original','status':'ready'}},{'op':'journal','task_id':'TAMPER','kind':'review','text':'Original review.'}]})
+        incoming=self.export(1)
+        incoming['records']['task_journal_entries'][0]['details_json']=json.dumps({'text':'Forged replacement'})
+        incoming['id']=exchange.research.digest({key:value for key,value in incoming.items() if key!='id'})
+        before=self.stores[0].snapshot()
+        with self.assertRaisesRegex(StoreError,'provenance mismatch'):
+            self.apply(0,incoming,'tampered-journal')
+        self.assertEqual(self.stores[0].snapshot(),before)
+
     def test_schema7_upgrade_backfills_only_applied_portable_history(self):
         import sys
         import sqlite3

@@ -255,8 +255,9 @@ class RoadmapStore:
         return roots
 
     def _event(self, db, request_id, task_id, actor, kind, details, historical_at=None, principal_id=None):
+        event_id=str(uuid.uuid4())
         db.execute("INSERT INTO events(event_id,request_id,task_id,actor_json,recorded_at,historical_at,kind,details_json) VALUES(?,?,?,?,?,?,?,?)",
-                   (str(uuid.uuid4()), request_id, task_id, _json(actor) if actor else None,
+                   (event_id, request_id, task_id, _json(actor) if actor else None,
                     datetime.now(timezone.utc).isoformat(), historical_at, kind, _json(details)))
         if task_id is not None and kind != "legacy_attempt":
             task = db.execute("SELECT uid,project_id FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -266,6 +267,8 @@ class RoadmapStore:
                         _json(details.get("before")) if "before" in details else None,
                         _json(details.get("after")) if "after" in details else None,
                         details.get("text"), datetime.now(timezone.utc).isoformat()))
+
+        roadmap_exchange.retain_task_journal(db,event_id,principal_id)
 
     def import_v1(self, records, source_sha256):
         if not isinstance(source_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
@@ -719,7 +722,7 @@ class RoadmapStore:
                     task_operations.append(operation)
                     if isinstance(operation, dict) and operation.get("op") == "journal" and "supersedes" in operation:
                         supersedes = _text(operation["supersedes"], "superseded event ID", 100)
-                        previous = db.execute("SELECT task_id FROM events WHERE event_id=?", (supersedes,)).fetchone()
+                        previous = db.execute("SELECT t.id AS task_id FROM task_journal_entries j JOIN tasks t ON t.uid=j.task_id AND t.project_id=j.project_id WHERE j.id=? UNION ALL SELECT task_id FROM events WHERE event_id=?", (supersedes,supersedes)).fetchone()
                         if previous is None or previous["task_id"] != operation.get("task_id"):
                             raise StoreError(400, "Correction must reference an existing event on the same task")
                     event_data.append(self._operate(tasks, links, operation, actor))

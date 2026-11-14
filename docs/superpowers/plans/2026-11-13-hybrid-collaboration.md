@@ -83,3 +83,21 @@ published project-agent instructions. Verify Git-only startup requires no host.
 
 Completion requires evidence for all of these gates and the original feature
 plans; a public repository or standalone module test suite is not full delivery.
+
+
+### Immutable journal implementation detail
+
+Keep task journal content in project-scoped immutable records, keyed by original
+event UUID and referencing the stable task UUID. Preserve the complete source
+event, exact details JSON, installation UUID and content digest. Backfill from
+local events on a backed-up schema upgrade without granting membership from a
+display label. Existing local events remain untouched. Exchange the records using
+the same immutable-identity collision rules as evidence revisions. Integrate them
+into paginated task history, de-duplicating existing local event IDs. Corrections
+remain append-only and may reference an imported entry on the same task.
+
+Acceptance exercises independent-store text/evidence/correction round trips,
+original provenance, schema-8 backfill without event/membership changes, malformed
+payload rejection without writes, stable pagination and existing Git/live flows.
+Old immutable snapshots remain unchanged; missing journal rows mean unknown
+historical content, never fabricated progress. This does not transfer leases.
