@@ -77,3 +77,12 @@ for shared coordination. Never infer a host lease from portable task data.
 Task journals share their full text, evidence and correction links as immutable
 records in schema 9. Read them with the scoped task history/context endpoints;
 imported author labels are provenance, not authentication grants.
+
+
+## Independent edits
+
+Use the advertised [record concurrency](record-concurrency.md) mode when editing
+unrelated tasks, questions or documents in tandem. Supply guards for every affected
+record and parent scope; keep the exact request ID/payload for uncertain retries.
+Global mode remains required for bulk synchronization and unsupported operations.
+Never silently refresh a stale guard after 409.

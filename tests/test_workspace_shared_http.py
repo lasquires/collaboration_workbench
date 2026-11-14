@@ -69,6 +69,37 @@ class SharedHttpTests(unittest.TestCase):
         body={'project_id':self.other,'task_id':'TASK'}
         self.assertEqual(403,self.request('/v1/live-claims-read',self.member_token,body)[0])
 
+    def test_authenticated_record_mode_and_capabilities_preserve_global_contract(self):
+        capabilities=self.request('/v1/projects/'+self.project+'/capabilities',self.member_token)[1]['capabilities']
+        self.assertEqual(capabilities['concurrency_modes'],['global','records'])
+        self.assertIn('task_structure',capabilities['record_concurrency_types'])
+        initial={'project_id':self.project,'actor':{'principal_id':self.member_id},'request_id':'record-http-create','expected_revision':self.store.snapshot()['revision'],'operations':[{'op':'create','alias':name,'record':{'title':name,'status':'ready'}} for name in ('CAS-A','CAS-B')]}
+        self.assertEqual(200,self.request('/v1/transactions',self.member_token,initial)[0])
+        tasks=[self.store.read_v1('context',self.project,key=name)['context']['task'] for name in ('CAS-A','CAS-B')]
+        payloads=[{'project_id':self.project,'actor':{'principal_id':self.member_id},'request_id':'record-http-'+str(index),'concurrency_mode':'records','expected_records':[{'type':'task','id':task['id'],'revision':task['record_revision']}],'operations':[{'op':'update','task_id':task['id'],'fields':{'summary':'Independent HTTP edit'}}]} for index,task in enumerate(tasks)]
+        for payload in payloads:self.assertEqual(200,self.request('/v1/transactions',self.member_token,payload)[0])
+        self.assertEqual(200,self.request('/v1/transactions',self.member_token,payloads[0])[0])
+        self.assertEqual(409,self.request('/v1/transactions',self.member_token,{**payloads[0],'request_id':'record-http-stale'})[0])
+        spoof={**payloads[0],'actor':{'principal_id':'another-principal'},'request_id':'record-http-spoof'}
+        self.assertEqual(403,self.request('/v1/transactions',self.member_token,spoof)[0])
+        self.assertEqual(403,self.request('/v1/transactions',self.member_token,{**payloads[0],'project_id':self.other})[0])
+        mixed={**payloads[0],'expected_revision':self.store.snapshot()['revision'],'request_id':'record-http-mixed'}
+        self.assertEqual(400,self.request('/v1/transactions',self.member_token,mixed)[0])
+
+    def test_feedback_guard_read_is_bound_to_the_authenticated_principal(self):
+        create={'project_id':self.project,'actor':{'principal_id':self.member_id},'request_id':'feedback-guard-doc','expected_revision':self.store.snapshot()['revision'],'operations':[{'op':'create_document','id':'feedback-doc','kind':'guide','title':'Guide','authority_kind':'service_body','body':'Shared guide'}]}
+        self.assertEqual(200,self.request('/v1/transactions',self.member_token,create)[0])
+        version=self.store.read_v1('documents',self.project)['items'][0]['current_version_id']
+        vote={'project_id':self.project,'actor':{'principal_id':self.member_id},'request_id':'feedback-guard-vote','concurrency_mode':'records','expected_records':[{'type':'feedback','id':version,'revision':0}],'operations':[{'op':'set_feedback','document_version_id':version,'value':'helpful','reason':'Read this version'}]}
+        self.assertEqual(200,self.request('/v1/transactions',self.member_token,vote)[0])
+        path='/v1/feedback?project_id='+self.project
+        own=self.request(path,self.member_token)[1]['items'][0]
+        self.assertEqual(own['my_feedback_revision'],1);self.assertEqual(own['my_feedback']['value'],'helpful')
+        owner=self.request(path,self.owner_token)[1]['items'][0]
+        self.assertEqual(owner['my_feedback_revision'],0);self.assertIsNone(owner['my_feedback'])
+        owner_id=self.store.read_v1('capabilities',self.project)['capabilities']['local_principal_id']
+        self.assertEqual(403,self.request(path+'&principal_id='+owner_id,self.member_token)[0])
+
     def test_missing_auth_and_legacy_routes_are_blocked(self):
         self.assertEqual(401, self.request('/v1/projects')[0])
         self.assertEqual(403, self.request('/api/tasks', self.owner_token)[0])

@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 
 API_VERSION = 'research-workspace/v1'
-LIMITS = {'list_items':100,'neighborhood_nodes':250,'batch_records':500,'body_bytes':8*1024*1024,'history_items':50,'neighborhood_depth':20}
+LIMITS = {'list_items':100,'neighborhood_nodes':250,'batch_records':500,'body_bytes':8*1024*1024,'history_items':50,'neighborhood_depth':20,'record_guards':10000}
 
 
 def _error(status, message, **attributes):
@@ -173,8 +173,12 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
     coverage = _coverage(db,project_id)
     envelope = {'api_version':API_VERSION,'project_id':project_id,'revision':revision,'coverage':coverage,'next_cursor':None}
     if resource=='capabilities':
+        try:
+            from . import workspace_concurrency
+        except ImportError:
+            import workspace_concurrency
         local = db.execute("SELECT principal_id FROM local_principals WHERE project_id=? AND label='local'",(project_id,)).fetchone()
-        return {**envelope,'capabilities':{'limits':LIMITS,'identity_kind':'trusted_local_label','authenticated':False,'local_principal_id':local[0] if local else None,'concurrency_modes':['global'],'research_collections_available':True,'documents_available':True}}
+        return {**envelope,'capabilities':{'limits':LIMITS,'identity_kind':'trusted_local_label','authenticated':False,'local_principal_id':local[0] if local else None,'concurrency_modes':['global','records'],'record_concurrency_types':sorted(workspace_concurrency.TYPES),'record_concurrency_operations':sorted(workspace_concurrency.OPERATIONS),'research_collections_available':True,'documents_available':True}}
     max_limit = LIMITS['neighborhood_nodes'] if resource=='neighborhood' else LIMITS['list_items']
     limit = max_limit if limit is None else limit
     if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=max_limit:

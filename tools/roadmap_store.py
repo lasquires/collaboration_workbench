@@ -17,9 +17,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange
+    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange, workspace_concurrency
 except ImportError:
-    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange
+    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange, workspace_concurrency
 
 SCHEMA_VERSION = 1
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
@@ -521,15 +521,11 @@ class RoadmapStore:
                 db.rollback()
 
     def transact_v1(self, payload, *, bearer_token=None):
-        """Scoped adapter, retaining the existing single global CAS transaction."""
-        required = {"project_id", "actor", "request_id", "expected_revision", "operations"}
-        if not isinstance(payload, dict) or set(payload) != required:
-            raise StoreError(400, "Expected project_id, actor, request_id, expected_revision, operations")
+        """Scoped global or explicitly guarded record concurrency adapter."""
+        mode=workspace_concurrency.envelope_mode(payload)
         _text(payload["request_id"], "request ID", 200)
         if payload["request_id"].startswith("migration:"):
             raise StoreError(400, "Reserved request ID")
-        if not isinstance(payload["expected_revision"], str):
-            raise StoreError(400, "Expected revision required")
         actor = payload["actor"]
         if not isinstance(actor, dict) or set(actor) - {"principal_id", "session_id"} or not isinstance(actor.get("principal_id"), str):
             raise StoreError(400, "Actor requires stable principal_id and optional session_id")
@@ -553,11 +549,9 @@ class RoadmapStore:
                 digest = hashlib.sha256(_json({"v1": payload}).encode()).hexdigest()
                 if digest != prior["payload_digest"]:
                     raise StoreError(409, "Request ID reused with different payload")
-                if bearer_token is not None:
-                    return self.transact(payload["expected_revision"], payload["request_id"],
-                                         {"name": principal["label"], "kind": "agent"}, payload["operations"],
-                                         _workspace={"payload": payload, "aliases": {}, "bearer_token": bearer_token})
-                return json.loads(prior["result_json"])
+                return self.transact(payload.get("expected_revision", ""), payload["request_id"],
+                                     {"name": principal["label"], "kind": "agent"}, payload["operations"],
+                                     _workspace={"payload": payload, "aliases": {}, "bearer_token": bearer_token})
             operations = _copy(payload["operations"])
             local_creates = {}
             for op in operations:
@@ -605,7 +599,7 @@ class RoadmapStore:
                         uid = roadmap_projection.resolve_entity(db, project, "task", key)
                         converted.append(db.execute("SELECT id FROM tasks WHERE project_id=? AND uid=?", (project, uid)).fetchone()[0])
                     record_fields["dependencies"] = converted
-        return self.transact(payload["expected_revision"], payload["request_id"],
+        return self.transact(payload.get("expected_revision", ""), payload["request_id"],
                              {"name": principal["label"], "kind": "agent"}, operations,
                              _workspace={"payload": payload, "aliases": local_creates, "bearer_token": bearer_token})
 
@@ -653,12 +647,21 @@ class RoadmapStore:
                         required.add("manage_projects")
                     if not credential["is_owner"] and not required <= set(credential["capabilities"]):
                         raise StoreError(403, "Credential lacks current capability")
+                if _workspace:
+                    envelope=_workspace['payload'];current_actor=envelope['actor']
+                    membership=db.execute("SELECT m.capabilities_json FROM project_members m JOIN principals p ON p.id=m.principal_id WHERE m.project_id=? AND p.id=? AND p.archived_at IS NULL",(envelope['project_id'],current_actor['principal_id'])).fetchone()
+                    if membership is None or 'contribute' not in json.loads(membership[0]):
+                        raise StoreError(403,'Principal lacks current project contribution')
+                    if current_actor.get('session_id') is not None and not db.execute('SELECT 1 FROM agent_sessions WHERE id=? AND principal_id=?',(current_actor['session_id'],current_actor['principal_id'])).fetchone():
+                        raise StoreError(403,'Session does not belong to current principal')
                 prior = db.execute("SELECT * FROM transactions WHERE request_id=?", (request_id,)).fetchone()
                 if prior:
                     if prior["payload_digest"] != digest:
                         raise StoreError(409, "Request ID reused with different payload")
                     return json.loads(prior["result_json"])
-                if expected_revision != self._revision(self._meta(db)):
+                if _workspace and _workspace['payload'].get('concurrency_mode')=='records':
+                    workspace_concurrency.check_records(db,_workspace['payload'],operations)
+                elif expected_revision != self._revision(self._meta(db)):
                     raise StoreError(409, "Task revision changed; reread and reconcile")
                 exchange_ops = [op for op in operations if isinstance(op, dict) and op.get("op") in roadmap_exchange.OPS]
                 if exchange_ops:
@@ -675,10 +678,12 @@ class RoadmapStore:
                     db.execute("INSERT INTO transactions VALUES(?,?,?)", (request_id, digest, _json(result)))
                     db.commit()
                     return result
+                heads_before=workspace_concurrency.capture_heads(db,_workspace['payload']['project_id'] if _workspace else None)
                 tasks, links = self._state(db)
                 before = _copy(tasks)
                 metadata_before = {row['uid']:dict(row) for row in db.execute('SELECT * FROM tasks')}
                 structure_ids = set()
+                task_state_ids=set();task_state_legacy=set()
                 validated_tasks = set()
                 event_data = []
                 research_changes = []
@@ -692,7 +697,7 @@ class RoadmapStore:
                         change = roadmap_structure.apply_operation(db,project,principal,operation,request_id)
                         tasks,links = self._state(db)
                         structure_ids.update(change.pop('structure_task_ids',[]))
-                        change.pop('changed_task_ids',None)
+                        task_state_ids.update(change.pop('changed_task_ids',[]))
                         event = change.pop('event')
                         event_data.append((change['legacy_id'],operation['op'],event))
                         if operation['op']=='complete_task':
@@ -726,6 +731,7 @@ class RoadmapStore:
                         if previous is None or previous["task_id"] != operation.get("task_id"):
                             raise StoreError(400, "Correction must reference an existing event on the same task")
                     event_data.append(self._operate(tasks, links, operation, actor))
+                    if operation.get("op") in ("add_link","remove_link"):task_state_legacy.add(operation["task_id"])
                 for redirected in db.execute('SELECT t.id FROM task_redirects r JOIN tasks t ON t.uid=r.absorbed_id AND t.project_id=r.project_id WHERE r.active=1'):
                     for operation in task_operations:
                         if (operation.get('task_id')==redirected['id'] and operation.get('op') in ('update','set_parent','archive','claim','add_link','remove_link')) or operation.get('parent_id')==redirected['id'] or (operation.get('op') in ('add_link','remove_link') and operation.get('target_id')==redirected['id']):
@@ -756,6 +762,7 @@ class RoadmapStore:
                     if old and any(old['record'].get(field)!=task['record'].get(field) for field in ('acceptance','parent_gate')):
                         uid=db.execute('SELECT uid FROM tasks WHERE id=?',(key,)).fetchone()[0]
                         roadmap_structure.invalidate_gate(db,uid)
+                        structure_ids.add(uid)
                 for uid in structure_ids:
                     old=metadata_before.get(uid)
                     if old:
@@ -765,9 +772,10 @@ class RoadmapStore:
                             roadmap_structure.invalidate_gate(db,uid)
                 for row in db.execute('SELECT * FROM tasks').fetchall():
                     old=metadata_before.get(row['uid'])
-                    if old and row['revision']==old['revision'] and any(row[field]!=old[field] for field in ('gate_revision','acceptance_state','validation_id','decomposition_complete','area_id','structure_revision','archived_at')):
+                    if old and row['revision']==old['revision'] and (row['uid'] in task_state_ids or row['id'] in task_state_legacy or any(row[field]!=old[field] for field in ('gate_revision','acceptance_state','validation_id','decomposition_complete','area_id','structure_revision','archived_at'))):
                         db.execute('UPDATE tasks SET revision=revision+1 WHERE uid=?',(row['uid'],))
                 roadmap_structure.sync_legacy_claims(db)
+                workspace_concurrency.preserve_local_revisions(db,heads_before)
                 recorded_at = datetime.now(timezone.utc).isoformat()
                 for task_id in set(tasks) - set(before):
                     row = db.execute("SELECT project_id FROM tasks WHERE id=?", (task_id,)).fetchone()

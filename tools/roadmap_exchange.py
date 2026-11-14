@@ -308,6 +308,9 @@ def preview_import(db, project_id, bundle, *, merge_base_id=DECLARED_ANCESTOR):
             fields={}
             missing=object()
             for name in sorted(set(current_fields)|set(remote_fields)|set(original_fields)):
+                # CAS counters and last-update metadata are installation-local
+                # preconditions, not competing domain values from another writer.
+                if table not in IMMUTABLE and name in {'revision','structure_revision','updated_at'}:continue
                 local_value=current_fields.get(name,missing); value=remote_fields.get(name,missing); old=original_fields.get(name,missing)
                 if current is None or local_value==value: continue
                 fields[name]={'base':None if old is missing else old,'local':None if local_value is missing else local_value,'remote':None if value is missing else value,
@@ -405,6 +408,11 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
         return {'type':'exchange_snapshot','id':bundle['id']}
     prior=db.execute('SELECT result_json FROM exchange_imports WHERE project_id=? AND id=?',(project,bundle['id'])).fetchone()
     if prior: return json.loads(prior[0])
+    try:
+        from . import workspace_concurrency
+    except ImportError:
+        import workspace_concurrency
+    heads_before=workspace_concurrency.capture_heads(db,project)
     preview=preview_import(db,project,bundle,merge_base_id=op.get('merge_base_id',DECLARED_ANCESTOR))
     previous = {row['uid']: dict(row) for row in db.execute('SELECT * FROM tasks WHERE project_id=?', (project,))} if review_import else None
     previous_scope = {table: {tuple(row) for row in db.execute(query, (project,))}
@@ -492,6 +500,7 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
                 record['dependencies']=targets
                 db.execute('UPDATE tasks SET record_json=?,revision=revision+1 WHERE project_id=? AND id=?',(canonical(record),project,task['id']))
         if db.execute('PRAGMA foreign_key_check').fetchone(): research.error(409,'Exchange contains missing or foreign references')
+        workspace_concurrency.preserve_local_revisions(db,heads_before)
         if review_import: _review_merged_import(db, project, previous, previous_scope)
         # A field merge can alter a validation's gate or reference. Recheck the
         # resulting accepted state, rather than trusting either side in isolation.

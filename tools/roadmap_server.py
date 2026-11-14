@@ -227,7 +227,7 @@ def workspace_read(parsed):
     permitted = {"tasks": {"limit", "cursor"}, "events": {"limit", "after"},
                  "context": set(), "history": {"limit", "cursor", "key"},
                  "neighborhood": {"limit", "depth", "cursor", "key"}}.get(resource, {"limit", "cursor"}) | {"key"}
-    if resource in {"hints", "subscriptions", "inbox", "processing-status", "replay-jobs"}:
+    if resource in {"hints", "subscriptions", "inbox", "processing-status", "replay-jobs", "feedback"}:
         permitted.add("principal_id")
     if resource=="repository-updates":
         permitted.add("repository_id")
@@ -317,7 +317,7 @@ class Handler(BaseHTTPRequestHandler):
                     params['principal_id'][0] != principal['principal_id'] and not principal['is_owner']):
                 raise RoadmapError(403, 'Principal access denied')
         self._scope(principal, project_id)
-        if parsed.path in ('/v1/inbox','/v1/subscriptions') and 'principal_id' not in params:
+        if parsed.path in ('/v1/inbox','/v1/subscriptions','/v1/feedback') and 'principal_id' not in params:
             params['principal_id']=[principal['principal_id']]
             parsed=parsed._replace(query=urllib.parse.urlencode(params,doseq=True))
         result = workspace_read(parsed)

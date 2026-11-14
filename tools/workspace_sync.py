@@ -135,6 +135,22 @@ class WorkspaceGitSync:
                     if old != event:
                         raise SyncConflict({'event_id': event['id'], 'local': old, 'remote': event})
         bundle = dict(bundle)
+        # Project local-only CAS counters onto the accepted logical head when
+        # its domain content is identical. Counter maintenance cannot create a
+        # transport edit, revive a lease, or change an immutable source row.
+        projected={table:[dict(row) for row in rows] for table,rows in bundle['records'].items()}
+        metadata={'revision','structure_revision','updated_at'}
+        for table,rows in projected.items():
+            if table in exchange.IMMUTABLE:continue
+            for source in sources:
+                if not source:continue
+                previous={exchange._key(bundle['schema'],table,row):row for row in source['records'].get(table,[])}
+                for row in rows:
+                    old=previous.get(exchange._key(bundle['schema'],table,row))
+                    if old is not None and {key:value for key,value in row.items() if key not in metadata}=={key:value for key,value in old.items() if key not in metadata}:
+                        for key in metadata:
+                            if key in row and key in old:row[key]=old[key]
+        bundle['records']=projected
         records = {table: {exchange._key(bundle['schema'], table, row): row for row in rows}
                    for table, rows in bundle['records'].items()}
         for source in sources:

@@ -256,7 +256,7 @@ def apply_operation(db, project, principal, op, request_id):
     _err(400, 'Unknown document operation')
 
 
-def read(db, resource, project, *, limit=None, cursor=None, document_id=None, **unused):
+def read(db, resource, project, *, limit=None, cursor=None, document_id=None, principal_id=None, **unused):
     try:
         from .roadmap_projection import API_VERSION, _coverage, _encode, _decode
     except ImportError:
@@ -272,6 +272,7 @@ def read(db, resource, project, *, limit=None, cursor=None, document_id=None, **
     revision = f"{meta['store_id']}:{meta['revision']}"
     binding = {'resource':resource,'project_id':project,'revision':revision,'limit':limit,'document_id':document_id}
     offset = 0
+    if resource=='feedback' and principal_id is not None:binding['principal_id']=principal_id
     if cursor:
         page = _decode(cursor)
         if page.get('revision') != revision:
@@ -306,6 +307,8 @@ def read(db, resource, project, *, limit=None, cursor=None, document_id=None, **
         sql = 'SELECT f.*,v.document_id FROM feedback f JOIN document_versions v ON v.project_id=f.project_id AND v.id=f.document_version_id WHERE f.project_id=?'; params=[project]
         if document_id is not None: sql += ' AND v.document_id=?'; params.append(document_id)
         sql += ' ORDER BY f.document_version_id,f.created_at,f.principal_id LIMIT ? OFFSET ?'; params.extend([limit+1,offset])
+    if resource=='feedback' and principal_id is not None:
+        _capabilities(db,project,principal_id)
     rows = db.execute(sql, params).fetchall()
     items=[]
     for raw in rows[:limit]:
@@ -324,6 +327,11 @@ def read(db, resource, project, *, limit=None, cursor=None, document_id=None, **
             if not any(x['document_version_id']==version_id for x in all_items):
                 all_items.append({'document_version_id':version_id,'document_id':item['document_id'],'sample_size':aggregate['sample_size'],'helpful_count':aggregate['helpful_count'] or 0,'unhelpful_count':aggregate['unhelpful_count'] or 0,'reasons':reasons})
         items=all_items
+        if principal_id is not None:
+            for item in items:
+                own=db.execute('SELECT value,reason,revision FROM feedback WHERE project_id=? AND principal_id=? AND document_version_id=?',(project,principal_id,item['document_version_id'])).fetchone()
+                item['my_feedback_revision']=own['revision'] if own else 0
+                item['my_feedback']={'value':own['value'],'reason':own['reason']} if own else None
     out={'api_version':API_VERSION,'project_id':project,'revision':revision,'items':items,
          'coverage':{**_coverage(db,project),'source':'project documents and discussion','complete':True},
          'next_cursor':_encode({**binding,'offset':offset+limit}) if len(rows)>limit else None}

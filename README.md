@@ -50,8 +50,10 @@ Automatic Git source refresh is implemented. Optional live-service bearer access
 TLS startup, project-scoped collaborator credentials and browser sign-in are
 implemented; see [self-hosting](docs/self-hosting.md). Opt-in batched
 [Git sharing and field conflict review](docs/git-sharing.md) are implemented.
-Live/offline reconnect, complete merge conflict compensation and final
-end-to-end/scale acceptance are still being completed. Doctor reports pending
+Live/offline reconnect and explicit host-claim APIs are implemented.
+[Explicit record concurrency](docs/record-concurrency.md) lets supported unrelated
+edits proceed with scoped revision guards. Complete merge conflict compensation,
+collaboration UI integration and final end-to-end/scale acceptance remain open. Doctor reports pending
 synchronization explicitly. A successful connection is not evidence that research
 has synchronized, and workflow completion never establishes forensic correctness.
 
