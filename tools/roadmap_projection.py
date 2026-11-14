@@ -178,7 +178,7 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
         except ImportError:
             import workspace_concurrency
         local = db.execute("SELECT principal_id FROM local_principals WHERE project_id=? AND label='local'",(project_id,)).fetchone()
-        return {**envelope,'capabilities':{'limits':LIMITS,'identity_kind':'trusted_local_label','authenticated':False,'local_principal_id':local[0] if local else None,'concurrency_modes':['global','records'],'record_concurrency_types':sorted(workspace_concurrency.TYPES),'record_concurrency_operations':sorted(workspace_concurrency.OPERATIONS),'research_collections_available':True,'documents_available':True}}
+        return {**envelope,'capabilities':{'limits':LIMITS,'identity_kind':'trusted_local_label','authenticated':False,'local_principal_id':local[0] if local else None,'concurrency_modes':['global','records'],'record_concurrency_types':sorted(workspace_concurrency.TYPES),'record_concurrency_operations':sorted(workspace_concurrency.OPERATIONS),'research_collections_available':True,'documents_available':True,'journal_sharing_review_available':True}}
     max_limit = LIMITS['neighborhood_nodes'] if resource=='neighborhood' else LIMITS['list_items']
     limit = max_limit if limit is None else limit
     if not isinstance(limit,int) or isinstance(limit,bool) or not 1<=limit<=max_limit:
@@ -225,20 +225,28 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
             from roadmap_structure import redirect_group
         legacy=[rows[identity]['id'] for identity in redirect_group(db,project_id,uid)]
         marks=','.join('?' for _ in legacy)
-        events=list(db.execute(f"""SELECT e.sequence,e.event_id,e.request_id,e.task_id,e.actor_json,e.recorded_at,e.historical_at,e.kind,e.details_json,NULL AS origin_store_id,NULL AS source_sha256,NULL AS created_by
+        events=list(db.execute(f"""SELECT e.sequence,e.event_id,e.request_id,e.task_id,e.actor_json,e.recorded_at,e.historical_at,e.kind,e.details_json,NULL AS origin_store_id,NULL AS source_sha256,NULL AS created_by,NULL AS disclosure_mode,NULL AS source_event_id,NULL AS public_sha256
             FROM events e WHERE e.task_id IN ({marks})
             UNION ALL
-            SELECT json_extract(j.source_event_json,'$.sequence'),j.id,json_extract(j.source_event_json,'$.request_id'),t.id,json_extract(j.source_event_json,'$.actor_json'),j.recorded_at,j.historical_at,j.kind,j.details_json,j.origin_store_id,j.source_sha256,j.created_by
+            SELECT json_extract(j.source_event_json,'$.sequence'),j.id,json_extract(j.source_event_json,'$.request_id'),t.id,json_extract(j.source_event_json,'$.actor_json'),j.recorded_at,j.historical_at,j.kind,j.details_json,j.origin_store_id,j.source_sha256,j.created_by,NULL,NULL,NULL
             FROM task_journal_entries j JOIN tasks t ON t.project_id=j.project_id AND t.uid=j.task_id
             WHERE j.project_id=? AND t.id IN ({marks}) AND NOT EXISTS(SELECT 1 FROM events e WHERE e.event_id=j.id)
-            ORDER BY recorded_at DESC,sequence DESC,event_id DESC LIMIT ? OFFSET ?""",(*legacy,project_id,*legacy,limit+1,offset)))
+            UNION ALL
+            SELECT 0,d.id,NULL,t.id,d.source_actor_json,d.recorded_at,d.historical_at,d.kind,d.details_json,d.origin_store_id,d.source_sha256,d.created_by,d.mode,d.source_event_id,d.public_sha256
+            FROM journal_disclosures d JOIN tasks t ON t.project_id=d.project_id AND t.uid=d.task_id
+            WHERE d.project_id=? AND t.id IN ({marks})
+              AND NOT EXISTS(SELECT 1 FROM task_journal_entries j WHERE j.project_id=d.project_id AND j.id=d.source_event_id)
+              AND NOT EXISTS(SELECT 1 FROM events e JOIN tasks et ON et.id=e.task_id WHERE et.project_id=d.project_id AND e.event_id=d.source_event_id)
+            ORDER BY recorded_at DESC,sequence DESC,event_id DESC LIMIT ? OFFSET ?""",(*legacy,project_id,*legacy,project_id,*legacy,limit+1,offset)))
         items=[]
         for event in events[:limit]:
             item=dict(event)
             item['actor']=json.loads(item.pop('actor_json')) if item['actor_json'] else None
             item['details']=json.loads(item.pop('details_json'))
             origin=item.pop('origin_store_id');source_hash=item.pop('source_sha256');principal=item.pop('created_by')
-            item['source']='shared task journal' if origin else 'legacy-compatible task audit'
+            mode=item.pop('disclosure_mode');source_event=item.pop('source_event_id');public_hash=item.pop('public_sha256')
+            item['source']='reviewed journal disclosure' if mode else 'shared task journal' if origin else 'legacy-compatible task audit'
+            if mode:item['disclosure']={'id':item['event_id'],'mode':mode,'source_event_id':source_event,'public_sha256':public_hash,'original_available':False,'classification':'derived public projection; original source hash is attribution, not local bytes'}
             if origin:item['provenance']={'origin_store_id':origin,'source_sha256':source_hash,'principal_id':principal,'attribution':'source event; not an authentication grant'}
             item['original_task_id']=next(identity for identity in rows if rows[identity]['id']==item['task_id'])
             item['task_id']=uid

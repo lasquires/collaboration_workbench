@@ -180,7 +180,12 @@ class WorkspaceSyncService:
                         state.update(state='pending' if result.pending_local else 'current',requested=False,error=None,result=asdict(result),retry_after=0)
                     except SyncConflict as exc:
                         state.update(state='review-required',requested=False,error='Explicit merge review required',alternatives=exc.alternatives)
-                    except (StoreError,PrivacyBlocked,TransportError,ValueError,OSError,subprocess.SubprocessError):
+                    except StoreError as error:
+                        if getattr(error,'sharing_review_required',False):
+                            state.update(state='sharing-review-required',requested=False,error='Review authored journal sharing before export',retry_after=now+60)
+                        else:
+                            state.update(state='failed',requested=False,error='Git sharing could not finish; check the project binding, portable records and Git access',retry_after=now+60)
+                    except (PrivacyBlocked,TransportError,ValueError,OSError,subprocess.SubprocessError):
                         # Never persist an OS/Git error containing an authenticated URL.
                         state.update(state='failed',requested=False,error='Git sharing could not finish; check the project binding, portable records and Git access',retry_after=now+60)
                     self._save(project,identity,state)

@@ -16,8 +16,8 @@ except ImportError:
 
 OPS = {'register_exchange_snapshot', 'import_bundle'}
 RESOURCES = {'exchange'}
-TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_answer_selections question_resolution_events git_source_manifests'.split())
-IMMUTABLE = set('answers principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_resolution_events git_source_manifests'.split())
+TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_answer_selections question_resolution_events git_source_manifests journal_disclosures'.split())
+IMMUTABLE = set('answers principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_resolution_events git_source_manifests journal_disclosures'.split())
 # Only mutable relationships have row-removal semantics. Evidence/history rows
 # remain append-only; unknown-base omissions never establish a deletion.
 PRESENCE_TABLES = {'task_links'}
@@ -123,7 +123,7 @@ def _encode(row):
     return row
 
 
-def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
+def export_bundle(db, project_id, ancestor_id=None, *, portable=False, _for_merge=False):
     if db.execute('SELECT 1 FROM projects WHERE id=?',(project_id,)).fetchone() is None:
         research.error(404, 'Unknown exchange project')
     schema = _schema(db)
@@ -146,7 +146,7 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
     for event in history:
         event.pop('sequence',None)
     if portable:
-        history = [event for event in history if event['kind'] not in {'bind_root','hydrate_artifact_version','repository_snapshot','register_repository','import_bundle','import_publication','repository_index_publication'}]
+        history = [event for event in history if event['kind'] not in {'bind_root','hydrate_artifact_version','repository_snapshot','register_repository','import_bundle','import_publication','repository_index_publication','journal_sharing_review'}]
         history = [{**{key:event[key] for key in _PORTABLE_HISTORY - {'payload_sha256'}},
                     'payload_sha256':research.digest({key:event.get(key) for key in ('before_json','after_json','rationale')})}
                    for event in history]
@@ -155,6 +155,13 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
             if event['id'] in retained and retained[event['id']]!=event:research.error(409,'Immutable portable history identity collision')
             retained[event['id']]=event
         history=[retained[key] for key in sorted(retained)]
+    if portable:
+        try:
+            from . import workspace_journal_disclosure
+        except ImportError:
+            import workspace_journal_disclosure
+        known_roots=workspace_journal_disclosure.roots(db,project_id)
+        workspace_journal_disclosure.project_records(db,project_id,rows,known_roots,require_approval=not _for_merge)
     contributors={r.get('created_by') for records in rows.values() for r in records}
     contributors.update(r.get('reviewer_id') for records in rows.values() for r in records)
     contributors.update(e.get('actor_id') for e in history)
@@ -171,7 +178,7 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
         import workspace_findings
     workspace_findings.export_lineage(project_id,rows)
     bundle = {'format':_PORTABLE_FORMAT if portable else 'ssg2-exchange','version':2 if portable else 1,'project_id':project_id,'schema':schema,'ancestor_id':ancestor_id,'records':rows,'history':history}
-    if portable:
+    if portable and not _for_merge:
         roots=[row[0] for row in db.execute('SELECT path FROM artifact_roots WHERE project_id=?',(project_id,)) if not row[0].startswith('workspace-root:')]
         _portable_path_check({'records':rows,'history':history}, roots)
     bundle['id'] = research.digest(bundle)
@@ -180,7 +187,7 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
 
 def _compatible_schema(db,schema):
     current=_schema(db)
-    return (set(current)-set(schema)<={'task_journal_entries','merge_compensations','finding_revision_lineage','evidence_change_events','research_review_notices','answer_contexts','answer_reviews','question_answer_selections','question_resolution_events','git_source_manifests'}
+    return (set(current)-set(schema)<={'task_journal_entries','merge_compensations','finding_revision_lineage','evidence_change_events','research_review_notices','answer_contexts','answer_reviews','question_answer_selections','question_resolution_events','git_source_manifests','journal_disclosures'}
             and not set(schema)-set(current) and all(schema[key]==current[key] for key in schema))
 
 
@@ -285,6 +292,11 @@ def _validate(db, project, bundle):
     except ImportError:
         import workspace_source_index
     workspace_source_index.validate_bundle(project,bundle['records'])
+    try:
+        from . import workspace_journal_disclosure
+    except ImportError:
+        import workspace_journal_disclosure
+    workspace_journal_disclosure.validate_bundle(project,bundle['records'],db)
     validations={r['id']:r for r in bundle['records']['validation_records']}
     task_namespace.validate_tasks(db,project,bundle['records']['tasks'])
     for row in bundle['records']['tasks']:
@@ -311,7 +323,7 @@ def _fields(row):
 def preview_import(db, project_id, bundle, *, merge_base_id=DECLARED_ANCESTOR):
     _validate(db,project_id,bundle)
     portable=bundle['format']==_PORTABLE_FORMAT
-    local=export_bundle(db,project_id,portable=portable)
+    local=export_bundle(db,project_id,portable=portable,_for_merge=True)
     ancestor=None
     effective_base=bundle['ancestor_id'] if merge_base_id is DECLARED_ANCESTOR else merge_base_id
     if effective_base is not None and (not isinstance(effective_base,str) or not re.fullmatch('[0-9a-f]{64}',effective_base)):

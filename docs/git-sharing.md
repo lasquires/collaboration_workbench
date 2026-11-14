@@ -33,11 +33,11 @@ capabilities are never imported through Git.
 ## Source metadata and local bytes
 
 Portable version 2 carries source identities and hashes, not raw artifact bytes,
-SQLite files, credentials or physical source roots. History uses stable event
-metadata and payload digests; full original history remains in the originating
-app and explicit local exchange bundles. The serializer rejects host paths in
-portable record text instead of silently rewriting evidence. Use project-relative
-references for shared records.
+SQLite files, credentials or physical source roots. Safe task journals carry exact
+text and source provenance. Other audit history uses stable event metadata and
+payload digests. The serializer rejects host paths in portable record text;
+unsafe task journals require the explicit disclosure review below. Use
+project-relative references for new shared records.
 
 An imported source root is unbound on the receiving machine. The owner can bind
 it using the scoped `bind_root` operation, then authenticate the local file with
@@ -117,3 +117,52 @@ The task's compatibility `dependencies` list mirrors the final reviewed dependen
 graph. It is rebuilt from those links after applying choices, so choosing to keep
 a dependency cannot leave its task fields saying it was removed. Original task
 records and the incoming snapshots remain unchanged in history.
+
+## Explicit review of journal sharing
+
+An authored note containing a local path pauses portable export. Read
+`GET /v1/journal-sharing-review?project_id=...` to inspect a bounded page of safe
+public proposals. The preview does not repeat matched private text. Each affected
+entry offers **redacted** and/or **omitted** proposals; there is no default choice.
+Redaction replaces each unsafe string value with `[LOCAL_PATH_REDACTED]` while
+keeping safe sibling values. Omission publishes an explicit withheld-entry notice.
+Neither edits the original note. Unsafe identity/attribution metadata and unsupported
+non-journal fields keep export blocked.
+
+Submit a normal scoped transaction containing:
+
+```json
+{
+  "op": "review_journal_sharing",
+  "review_digest": "the exact preview digest",
+  "limit": 100,
+  "cursor": null,
+  "choices": {"original-event-id": "redacted"}
+}
+```
+
+Use the preview's actual `limit`, `cursor` and event IDs, choose exactly one offered
+mode for every entry on that page, and use the current transaction revision.
+The caller needs current `contribute` and `review` capabilities. A changed source,
+page or revision returns 409 and requires a fresh review. Exact request replay is
+idempotent and still checks current authority. Read a fresh page after applying
+choices; old page cursors expire. `current_choice` is present only when the local
+receipt matches the current exact proposal.
+
+A consent receipt stays on this installation. Peers receive immutable derived
+`journal_disclosures` with original event/task/installation identity, attribution,
+original source hash and a separate digest of the public projection. That source
+hash refers to the withheld original; it does not authenticate absent original
+bytes or confer forensic acceptance. Imported disclosures never create membership,
+review rights or permission to share an unsafe original held by the receiver.
+Task history/context labels derived entries and permits append-only corrections
+that refer to the original event or disclosure ID. Local history keeps the raw note
+and does not duplicate its public projection.
+
+Publishing is durable: a later local choice cannot erase a disclosure already
+shared through Git or a live host. Omission is a visible coverage gap, not a claim
+of complete original history. Git/live status distinguishes local
+`sharing-review-required` from `host-sharing-review-required`; the host owner must
+review its own blocked notes. Generated roots, raw blobs and credentials remain
+excluded. Upgrade collaborators to schema16 before exchanging this new table;
+older snapshots without it remain readable without rewriting their hashes.

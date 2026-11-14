@@ -216,6 +216,9 @@ def workspace_read(parsed):
         if set(options)-{'ancestor_id','portable'}:
             raise RoadmapError(400,'Unsupported exchange export parameter')
         return _store().exchange_preview(project_id,ancestor_id=options.get('ancestor_id'),portable=options.get('portable',False))
+    if path==['v1','journal-sharing-review']:
+        if set(options)-{'limit','cursor'}:raise RoadmapError(400,'Unsupported sharing review parameter')
+        return _store().read_v1('journal-sharing-review',project_id,**options)
     if path==['v1','source-manifests']:
         if set(options)-{'manifest_id','limit','cursor'}:raise RoadmapError(400,'Unsupported source manifest parameter')
         return _store().read_v1('source-manifests',project_id,**options)
@@ -367,7 +370,7 @@ class Handler(BaseHTTPRequestHandler):
             if any(isinstance(op, dict) and op.get('op') in owner_ops for op in operations) and not principal['is_owner']:
                 raise RoadmapError(403, 'Host filesystem access requires owner credential')
             required = {'contribute'}
-            if any(isinstance(op, dict) and op.get('op') in {'record_validation', 'complete_task', 'approve_guidance', 'review_answer'} for op in operations):
+            if any(isinstance(op, dict) and op.get('op') in {'record_validation', 'complete_task', 'approve_guidance', 'review_answer', 'review_journal_sharing'} for op in operations):
                 required.add('review')
             if any(isinstance(op, dict) and op.get('op') in {'handoff_claim'} for op in operations):
                 required.add('manage_claims')
@@ -617,7 +620,7 @@ class Handler(BaseHTTPRequestHandler):
             latest = None
         result = {"error": str(exc), "code": codes.get(exc.status, "error"),
                   "conflicts": getattr(exc, "conflicts", []), "latest_revision": latest}
-        for name in ("restart_required", "limits"):
+        for name in ("restart_required", "limits", "sharing_review_required"):
             if hasattr(exc, name):
                 result[name] = getattr(exc, name)
         self._json(exc.status, result)
@@ -655,7 +658,7 @@ def checkpoint_before_upgrade(path):
         version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return None
-    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
+    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
         raise RoadmapError(503, 'Unsupported task database schema; no migration attempted')
     from migrate_roadmap import backup_database
     def file_hash(target):

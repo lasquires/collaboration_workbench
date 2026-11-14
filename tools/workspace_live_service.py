@@ -151,7 +151,8 @@ class WorkspaceLiveService:
                 status=client.status();config.update(last_status=status,state='join-required' if status['state']=='not-joined' else status['state'],error=None,retry_after=0);self._save(project,config)
                 return result
             except LiveConflict:
-                config.update(last_status=client.status(),state='review-required',error='Live reconciliation needs explicit review');self._save(project,config);raise
+                status=client.status();sharing=status['state'].endswith('sharing-review-required')
+                config.update(last_status=status,state=status['state'] if sharing else 'review-required',error=status.get('error') if sharing else 'Live reconciliation needs explicit review');self._save(project,config);raise
             except ApiError:
                 config.update(last_status=client.status(),state='offline',error='Host request was not confirmed; pending work is retained');self._save(project,config);raise
 
@@ -189,7 +190,9 @@ class WorkspaceLiveService:
                             config.update(state='join-required',last_status=status,error=None,retry_after=now+2)
                         else:
                             try:status=client.sync_once()
-                            except LiveConflict:status=client.status();status['state']='review-required'
+                            except LiveConflict:
+                                status=client.status()
+                                if not status['state'].endswith('sharing-review-required'):status['state']='review-required'
                             config.update(last_status=status,state=status['state'],error=status.get('error'),retry_after=now+(10 if status['state']=='offline' else 2))
                     except (StoreError,ValueError,OSError,ApiError):
                         config.update(state='failed',error='Live connection paused; check project setup, host access and the private credential file',retry_after=now+10)

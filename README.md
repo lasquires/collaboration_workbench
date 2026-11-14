@@ -59,7 +59,9 @@ the scoped API. Project-scoped task imports preserve repeated labels across
 independent repositories through local storage mappings. Authored finding
 revisions and evidence withdrawal APIs preserve semantic lineage and prior hint
 decisions. Evidence-pinned answers support independent review, explicit question
-resolution and automatic review notices when support changes. Project migration, collaboration UI integration and final end-to-end/scale
+resolution and automatic review notices when support changes. Explicit journal
+sharing review can publish redacted disclosures or omission notices while keeping
+original notes and hashes unchanged locally. Project migration, collaboration UI integration and final end-to-end/scale
 acceptance remain open. Large portable bundles use content-addressed chunks in Git
 and authenticated staged HTTP transfers; each piece is at most 4 MiB, with a
 256 MiB aggregate limit. Private live state verifies cached documents on restart.

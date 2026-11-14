@@ -270,6 +270,9 @@ class WorkspaceLiveClient:
                 latest=self._load();latest.update(state='review-required',error='Live reconciliation needs review; local and pending records are retained');self._save(latest)
                 raise
             except ApiError as error:
+                if getattr(error,'details',{}).get('sharing_review_required'):
+                    state.update(state='host-sharing-review-required',error='The host must review its journal sharing before export');self._save(state)
+                    raise LiveConflict({'side':'host-sharing','project_id':self.project_id,'resource':'/v1/journal-sharing-review','reason':'Host journal sharing requires explicit review'}) from None
                 job=state['outbox']
                 if error.status==409 and job and job['phase']=='register-base' and 'revision changed' in str(error).lower():
                     old=job.pop('remote_request')
@@ -280,6 +283,9 @@ class WorkspaceLiveClient:
                 state['error']='Host request was not confirmed; pending changes and exact request identity are retained'
                 state['last_http_status']=error.status;self._save(state);return self.status()
             except StoreError as error:
+                if getattr(error,'sharing_review_required',False):
+                    state.update(state='sharing-review-required',error='Review local journal sharing before portable export');self._save(state)
+                    raise LiveConflict({'side':'sharing','project_id':self.project_id,'resource':'/v1/journal-sharing-review','reason':'Local journal sharing requires explicit review'}) from None
                 job=state['outbox']
                 if error.status==409 and job and job['phase']=='cache-outgoing' and 'revision changed' in str(error).lower():
                     old=job.pop('local_request')

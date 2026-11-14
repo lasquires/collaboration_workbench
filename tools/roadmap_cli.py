@@ -15,9 +15,10 @@ from urllib.parse import urlencode,urlsplit
 
 
 class ApiError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, *, details=None):
         self.status = status
         self.message = message
+        self.details = details if isinstance(details,dict) else {}
         super().__init__(message)
 
 
@@ -61,7 +62,7 @@ def _request_wire(base_url, path, payload=None, *, token_file=None, chunked=Fals
         message = body.get("error", f"HTTP {exc.code}")
         if exc.code == 409:
             message = f"STALE CONFLICT (409): {message}; reread context and reconcile explicitly"
-        raise ApiError(exc.code, message) from exc
+        raise ApiError(exc.code, message, details=body) from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise ApiError(0, f"Roadmap API unavailable or returned invalid JSON: {exc}") from exc
 

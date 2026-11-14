@@ -653,7 +653,7 @@ class RoadmapStore:
                     if names & owner_ops and not credential["is_owner"]:
                         raise StoreError(403, "Host filesystem access requires owner credential")
                     required = {"contribute"}
-                    if names & {"record_validation", "complete_task", "approve_guidance", "review_answer"}:
+                    if names & {"record_validation", "complete_task", "approve_guidance", "review_answer", "review_journal_sharing"}:
                         required.add("review")
                     if "handoff_claim" in names:
                         required.add("manage_claims")
@@ -666,7 +666,7 @@ class RoadmapStore:
                     membership=db.execute("SELECT m.capabilities_json FROM project_members m JOIN principals p ON p.id=m.principal_id WHERE m.project_id=? AND p.id=? AND p.archived_at IS NULL",(envelope['project_id'],current_actor['principal_id'])).fetchone()
                     if membership is None or 'contribute' not in json.loads(membership[0]):
                         raise StoreError(403,'Principal lacks current project contribution')
-                    if any(op.get('op')=='review_answer' for op in operations) and 'review' not in json.loads(membership[0]):
+                    if any(op.get('op') in {'review_answer','review_journal_sharing'} for op in operations) and 'review' not in json.loads(membership[0]):
                         raise StoreError(403,'Current independent review capability required')
                     if current_actor.get('session_id') is not None and not db.execute('SELECT 1 FROM agent_sessions WHERE id=? AND principal_id=?',(current_actor['session_id'],current_actor['principal_id'])).fetchone():
                         raise StoreError(403,'Session does not belong to current principal')
@@ -746,7 +746,7 @@ class RoadmapStore:
                     task_operations.append(operation)
                     if isinstance(operation, dict) and operation.get("op") == "journal" and "supersedes" in operation:
                         supersedes = _text(operation["supersedes"], "superseded event ID", 100)
-                        previous = db.execute("SELECT t.id AS task_id FROM task_journal_entries j JOIN tasks t ON t.uid=j.task_id AND t.project_id=j.project_id WHERE j.id=? UNION ALL SELECT task_id FROM events WHERE event_id=?", (supersedes,supersedes)).fetchone()
+                        previous = db.execute("SELECT t.id AS task_id FROM task_journal_entries j JOIN tasks t ON t.uid=j.task_id AND t.project_id=j.project_id WHERE j.id=? AND t.id=? UNION ALL SELECT task_id FROM events WHERE event_id=? AND task_id=? UNION ALL SELECT t.id FROM journal_disclosures d JOIN tasks t ON t.project_id=d.project_id AND t.uid=d.task_id WHERE t.id=? AND (d.id=? OR d.source_event_id=?)", (supersedes,operation.get('task_id'),supersedes,operation.get('task_id'),operation.get('task_id'),supersedes,supersedes)).fetchone()
                         if previous is None or previous["task_id"] != operation.get("task_id"):
                             raise StoreError(400, "Correction must reference an existing event on the same task")
                     event_data.append(self._operate(tasks, links, operation, actor))

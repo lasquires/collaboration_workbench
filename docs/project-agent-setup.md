@@ -263,3 +263,17 @@ and retained-history comparisons. Run the extended gate with
 `WORKBENCH_SCALE_GATE=1` and
 `python -B -m unittest tests.test_workspace_large_sync.SourceRoundtripTests`.
 These transfer checks do not establish whole-product delivery or native parity.
+
+
+## Reviewing notes that contain local paths
+
+When portable export reports `sharing_review_required`, use the project-scoped
+`GET /v1/journal-sharing-review` and the revision/digest-bound
+`review_journal_sharing` transaction described in [Git sharing](git-sharing.md#explicit-review-of-journal-sharing).
+Current contribute+review rights are required. Choose only after inspecting the
+safe proposed public details and the original local note. A redacted disclosure
+or explicit omission leaves the original immutable event unchanged. Public
+projection hashes and original source hashes have different meanings; imported
+disclosures cannot grant local sharing permission or prove original bytes exist.
+These scoped APIs are implemented; dashboard review controls are a separate UI
+integration gate.

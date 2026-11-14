@@ -61,6 +61,27 @@ class SharedHttpTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
 
+    def test_journal_disclosure_review_is_scoped_and_requires_current_review_role(self):
+        import uuid
+        def write(actor,token,ops):
+            return self.request('/v1/transactions',token,{'project_id':self.project,'actor':{'principal_id':actor},'request_id':str(uuid.uuid4()),'expected_revision':self.store.snapshot()['revision'],'operations':ops})
+        code,result=write(self.member_id,self.member_token,[{'op':'create','alias':'privacy-note','record':{'title':'Journal disclosure','status':'ready'}},{'op':'journal','task_id':'privacy-note','kind':'observation','text':r'Private C:\Users\Synthetic\local.txt'}])
+        self.assertEqual(code,200,result)
+        code,blocked=self.request('/v1/exchange-export?project_id='+self.project+'&portable=true',self.member_token)
+        self.assertEqual(code,409);self.assertTrue(blocked['sharing_review_required'])
+        path='/v1/journal-sharing-review?project_id='+self.project
+        self.assertEqual(self.request(path)[0],401)
+        self.assertEqual(self.request('/v1/journal-sharing-review?project_id='+self.other,self.member_token)[0],403)
+        code,preview=self.request(path,self.member_token);self.assertEqual(code,200,preview)
+        self.assertNotIn('Synthetic',json.dumps(preview))
+        op={'op':'review_journal_sharing','review_digest':preview['review_digest'],'limit':preview['limit'],'cursor':preview['cursor'],'choices':{item['source_event_id']:'redacted' for item in preview['items']}}
+        self.assertEqual(write(self.member_id,self.member_token,[op])[0],403)
+        with self.store._connection() as db:owner=auth.authenticate(db,self.owner_token)['principal_id']
+        code,result=write(owner,self.owner_token,[op]);self.assertEqual(code,200,result)
+        code,exported=self.request('/v1/exchange-export?project_id='+self.project+'&portable=true',self.owner_token)
+        self.assertEqual(code,200,exported);self.assertEqual(len(exported['bundle']['records']['journal_disclosures']),1)
+        self.assertFalse(any(table=='journal_share_choices' for table in exported['bundle']['records']))
+
     def test_source_manifest_reads_are_scoped_and_capture_remains_owner_only(self):
         path='/v1/source-manifests?project_id='+self.project
         self.assertEqual(self.request(path)[0],401)
