@@ -275,5 +275,8 @@ safe proposed public details and the original local note. A redacted disclosure
 or explicit omission leaves the original immutable event unchanged. Public
 projection hashes and original source hashes have different meanings; imported
 disclosures cannot grant local sharing permission or prove original bytes exist.
-These scoped APIs are implemented; dashboard review controls are a separate UI
-integration gate.
+The dashboard Sharing review tab exposes this flow with explicit proposals,
+original-note inspection, paging and exact uncertain-request recovery. Browser
+reload recovery stores request IDs/modes in session storage, not raw notes or
+credentials; it never submits automatically. Broader collaboration UI and project
+cutover have separate acceptance gates.

@@ -120,6 +120,23 @@ records and the incoming snapshots remain unchanged in history.
 
 ## Explicit review of journal sharing
 
+Open **Sharing review** in the dashboard after choosing the project. Read the
+original note on demand, inspect the safe public proposals, and choose a redacted
+copy or omission notice for every affected note on the page. Nothing is selected
+by default. Acknowledge durable publication, then save. Pages inspect up to twenty
+journal entries; **Next journal page** continues without silent truncation.
+Previously approved modes are shown as history and are not new default choices.
+
+A stale save requires **Load fresh review · discard choices**. Reloading a dirty
+review is explicitly labeled as discarding its selections. An uncertain save
+locks those choices and provides **Retry exact same sharing request**. Its prepared
+request IDs and modes are kept in this tab's browser session, without original
+note text or credentials. Reloading the page restores the original project and
+review; it does not automatically submit. Retry with the original authorized
+access until the server confirms that request. Changing access cannot establish
+whether an earlier uncertain request committed. Browser-session recovery is not
+an export of local data or permission granted by an imported disclosure.
+
 An authored note containing a local path pauses portable export. Read
 `GET /v1/journal-sharing-review?project_id=...` to inspect a bounded page of safe
 public proposals. The preview does not repeat matched private text. Each affected
