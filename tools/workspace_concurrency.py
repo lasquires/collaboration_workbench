@@ -7,8 +7,8 @@ except ImportError:
 
 TASK_OPERATIONS={'create','create_task','update','set_parent','archive','journal','add_link','remove_link'}|structure.OPS
 DOCUMENT_OPERATIONS={'create_document','register_document_version','add_comment','propose_edit','accept_proposal','reject_proposal','set_feedback'}
-OPERATIONS=TASK_OPERATIONS|DOCUMENT_OPERATIONS|{'create_question','revise_question'}
-TABLES={'project':'projects','area':'areas','question':'questions','document':'documents','proposal':'edit_proposals'}
+OPERATIONS=TASK_OPERATIONS|DOCUMENT_OPERATIONS|{'create_question','revise_question','create_finding','revise_finding','archive_finding','restore_finding'}
+TABLES={'project':'projects','area':'areas','question':'questions','document':'documents','proposal':'edit_proposals','finding':'findings'}
 TYPES={'task','task_structure','feedback'}|set(TABLES)
 
 
@@ -121,6 +121,12 @@ def check_records(db,payload,operations):
             elif name=='reverse_merge':
                 merge=research.scoped(db,'merge_records',project,operation.get('merge_id'))
                 for original in json.loads(merge['after_json'])['tasks']:task(original['uid']);task(original['uid'],True)
+        elif name in ('revise_finding','archive_finding','restore_finding'):scoped('finding',operation.get('finding_id'))
+        elif name=='create_finding':
+            scope=operation.get('scope',{})
+            if isinstance(scope,dict):
+                if scope.get('task_id'):task(scope['task_id'])
+                if scope.get('area_id'):scoped('area',scope['area_id'])
         elif name=='revise_question':scoped('question',operation.get('question_id'))
         elif name=='create_question':
             if operation.get('owner_task_id'):task(operation['owner_task_id'])
@@ -164,7 +170,7 @@ def capture_heads(db,project=None):
             'archived':row['archive_reason'],'area':row['area_id'],'decomposition':row['decomposition_complete'],
             'acceptance':record.get('acceptance'),'parent_gate':record.get('parent_gate'),'children':sorted(children[uid])})
     heads={}
-    for table in ('projects','areas','questions','documents','edit_proposals','feedback'):
+    for table in ('projects','areas','questions','documents','edit_proposals','feedback','findings'):
         for row in rows(table):
             identity=(row['principal_id'],row['document_version_id']) if table=='feedback' else (row['id'],)
             heads[(table,identity)]=row

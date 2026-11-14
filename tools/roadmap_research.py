@@ -13,9 +13,9 @@ from pathlib import Path, PurePosixPath
 
 OPS = {'register_root', 'bind_root', 'register_artifact', 'register_artifact_version',
        'create_index_run', 'stage_batch', 'publish_run', 'create_question',
-       'record_negative_search', 'import_variable_registry', 'revise_question'}
+       'record_negative_search', 'import_variable_registry', 'revise_question', 'create_finding', 'revise_finding', 'archive_finding', 'restore_finding', 'set_evidence_state'}
 RESOURCES = {'artifacts', 'artifact-versions', 'index-runs', 'occurrences',
-             'observations', 'questions', 'negative-searches', 'findings'}
+             'observations', 'questions', 'negative-searches', 'findings', 'finding-revisions', 'evidence-links', 'evidence-changes', 'research-review-notices'}
 
 
 def canonical(value):
@@ -185,6 +185,11 @@ def publish_run(db,project_id,run_id,manifest_hash=None,*,manifest=None):
 
 def apply_operation(db,project,principal,op,request_id):
     kind=op['op']; now=datetime.now(timezone.utc).isoformat()
+    try:
+        from . import workspace_findings
+    except ImportError:
+        import workspace_findings
+    if kind in workspace_findings.OPS:return workspace_findings.apply_operation(db,project,principal,op,request_id)
     identity=op.get('id') or str(uuid.uuid4())
     text(identity,'record ID',200)
     if kind=='register_root':
@@ -474,6 +479,11 @@ def read(db,resource,project,*,limit=None,cursor=None,**unused):
         from .roadmap_projection import API_VERSION, _coverage, _encode, _decode
     except ImportError:
         from roadmap_projection import API_VERSION, _coverage, _encode, _decode
+    try:
+        from . import workspace_findings
+    except ImportError:
+        import workspace_findings
+    if resource in workspace_findings.RESOURCES:return workspace_findings.read(db,resource,project,limit=limit,cursor=cursor,**unused)
     coverage=_coverage(db,project)
     meta=db.execute('SELECT * FROM store_meta WHERE singleton=1').fetchone()
     revision=f"{meta['store_id']}:{meta['revision']}"
@@ -515,6 +525,7 @@ def read(db,resource,project,*,limit=None,cursor=None,**unused):
             item['locator_key']=json.loads(item['locator_key'])
             item['candidate_type']='observation'
             item['support_hashes']=[item['source_sha256'],item['content_hash']]
+        if resource=='findings':item=workspace_findings.describe(db,project,item)
         items.append(item)
     runs=[{'id':r['id'],'coverage':json.loads(r['coverage_json'])} for r in db.execute("SELECT id,coverage_json FROM index_runs WHERE project_id=? AND state='published' ORDER BY id",(project,))]
     coverage={**coverage,'source':'published research indexes','published_runs':runs,'complete':False}

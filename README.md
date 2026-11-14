@@ -54,7 +54,9 @@ Live/offline reconnect and explicit host-claim APIs are implemented.
 [Explicit record concurrency](docs/record-concurrency.md) lets supported unrelated
 edits proceed with scoped revision guards. [Reviewed merge compensation](docs/merge-compensation.md) is implemented through
 the scoped API. Project-scoped task imports preserve repeated labels across
-independent repositories through local storage mappings. Findings/answer lifecycle,
+independent repositories through local storage mappings. Authored finding
+revisions and evidence withdrawal APIs preserve semantic lineage and prior hint
+decisions. Evidence-gated answer acceptance,
 project migration, collaboration UI integration and final end-to-end/scale
 acceptance remain open. Doctor reports pending
 synchronization explicitly. A successful connection is not evidence that research

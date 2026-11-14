@@ -61,6 +61,25 @@ class SharedHttpTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
 
+    def test_authenticated_finding_lifecycle_reads_are_project_scoped(self):
+        body={'project_id':self.project,'actor':{'principal_id':self.member_id},'request_id':'http-authored-finding','expected_revision':self.store.snapshot()['revision'],'operations':[{'op':'create_finding','id':'http-finding','claim':'An explicitly unsupported research hypothesis','scope':{},'classification':'hypothesis','uncertainty':'No source support yet','evidence':[]}]}
+        code,result=self.request('/v1/transactions',self.member_token,body)
+        self.assertEqual(code,200,result)
+        self.assertEqual(self.request('/v1/transactions',self.member_token,body),(code,result))
+        for resource in ('findings','finding-revisions','evidence-links','evidence-changes','research-review-notices'):
+            path='/v1/'+resource+'?project_id='+self.project
+            self.assertEqual(self.request(path)[0],401)
+            self.assertEqual(self.request(path,self.member_token)[0],200)
+            self.assertEqual(self.request('/v1/'+resource+'?project_id='+self.other,self.member_token)[0],403)
+        finding=self.request('/v1/findings?project_id='+self.project,self.member_token)[1]['items'][0]
+        self.assertEqual(finding['evidence_review_state'],'unsupported')
+        self.assertIn('not forensic acceptance',finding['classification_origin'])
+        revision=self.request('/v1/finding-revisions?project_id='+self.project+'&subject_id=http-finding&limit=1',self.member_token)[1]['items'][0]
+        self.assertEqual(revision['finding_id'],'http-finding')
+        with self.store._connection() as db:
+            notices=db.execute('SELECT count(*) FROM research_review_notices').fetchone()[0]
+        self.assertEqual(notices,0)
+
     def test_live_claim_controls_cannot_proxy_owner_credentials_for_guests(self):
         for action,fields in (('claims-read',{'task_id':'TASK'}),('claims-preview',{'operation':{'op':'claim_task','task_id':'TASK','rationale':'Work'}}),('claims-submit',{'review_id':'frozen-request'})):
             body={'project_id':self.project,**fields}

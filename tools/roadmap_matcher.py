@@ -186,34 +186,36 @@ _FINDING_SCOPE_SQL = "json_type(r.scope_json,'$.identifier')='text' AND length(j
 
 
 def _finding_count(db: sqlite3.Connection, project: str, *, revision_id: str | None = None) -> int:
-    sql = f"SELECT count(*) FROM finding_revisions r WHERE r.project_id=? AND ({_FINDING_SCOPE_SQL}) AND EXISTS(SELECT 1 FROM evidence_links e WHERE e.project_id=r.project_id AND e.subject_type='finding_revision' AND e.subject_id=r.id AND e.state='available' AND e.artifact_version_id=json_extract(r.scope_json,'$.artifact_version_id'))"
+    sql = f"SELECT count(*) FROM finding_revisions r WHERE r.project_id=? AND EXISTS(SELECT 1 FROM findings f WHERE f.project_id=r.project_id AND f.archived_at IS NULL AND f.current_revision_id=r.id) AND ({_FINDING_SCOPE_SQL}) AND EXISTS(SELECT 1 FROM evidence_links e WHERE e.project_id=r.project_id AND e.subject_type='finding_revision' AND e.subject_id=COALESCE((SELECT evidence_origin_id FROM finding_revision_lineage l WHERE l.project_id=r.project_id AND l.revision_id=r.id),r.id) AND e.state='available' AND e.artifact_version_id=json_extract(r.scope_json,'$.artifact_version_id'))"
     args: list[Any] = [project]
     if revision_id is not None:
-        sql += " AND r.id=?"; args.append(revision_id)
+        sql += " AND COALESCE((SELECT evidence_origin_id FROM finding_revision_lineage l WHERE l.project_id=r.project_id AND l.revision_id=r.id),r.id)=?"; args.append(revision_id)
     return db.execute(sql, args).fetchone()[0]
 
 
 def _finding_at(db: sqlite3.Connection, project: str, offset: int, *, revision_id: str | None = None) -> dict | None:
-    sql = f"SELECT r.*,json_extract(r.scope_json,'$.identifier') AS identifier,json_extract(r.scope_json,'$.namespace') AS namespace,json_extract(r.scope_json,'$.scope_key') AS scope_key,json_extract(r.scope_json,'$.artifact_version_id') AS artifact_version_id,v.binary_build_id FROM finding_revisions r JOIN artifact_versions v ON v.project_id=r.project_id AND v.id=json_extract(r.scope_json,'$.artifact_version_id') WHERE r.project_id=? AND ({_FINDING_SCOPE_SQL}) AND EXISTS(SELECT 1 FROM evidence_links e WHERE e.project_id=r.project_id AND e.subject_type='finding_revision' AND e.subject_id=r.id AND e.state='available' AND e.artifact_version_id=json_extract(r.scope_json,'$.artifact_version_id'))"
+    sql = f"SELECT r.*,json_extract(r.scope_json,'$.identifier') AS identifier,json_extract(r.scope_json,'$.namespace') AS namespace,json_extract(r.scope_json,'$.scope_key') AS scope_key,json_extract(r.scope_json,'$.artifact_version_id') AS artifact_version_id,v.binary_build_id FROM finding_revisions r JOIN artifact_versions v ON v.project_id=r.project_id AND v.id=json_extract(r.scope_json,'$.artifact_version_id') WHERE r.project_id=? AND EXISTS(SELECT 1 FROM findings f WHERE f.project_id=r.project_id AND f.archived_at IS NULL AND f.current_revision_id=r.id) AND ({_FINDING_SCOPE_SQL}) AND EXISTS(SELECT 1 FROM evidence_links e WHERE e.project_id=r.project_id AND e.subject_type='finding_revision' AND e.subject_id=COALESCE((SELECT evidence_origin_id FROM finding_revision_lineage l WHERE l.project_id=r.project_id AND l.revision_id=r.id),r.id) AND e.state='available' AND e.artifact_version_id=json_extract(r.scope_json,'$.artifact_version_id'))"
     args: list[Any] = [project]
     if revision_id is not None:
-        sql += " AND r.id=?"; args.append(revision_id)
+        sql += " AND COALESCE((SELECT evidence_origin_id FROM finding_revision_lineage l WHERE l.project_id=r.project_id AND l.revision_id=r.id),r.id)=?"; args.append(revision_id)
     sql += " ORDER BY r.id LIMIT 1 OFFSET ?"; args.append(offset)
     row = db.execute(sql, args).fetchone()
     if row is None:
         return None
     scope = json.loads(row["scope_json"])
-    links = db.execute("SELECT locator_json,support_hash FROM evidence_links WHERE project_id=? AND subject_type='finding_revision' AND subject_id=? AND artifact_version_id=? AND state='available' ORDER BY id", (project, row["id"], row["artifact_version_id"])).fetchall()
+    lineage=db.execute("SELECT evidence_origin_id FROM finding_revision_lineage WHERE project_id=? AND revision_id=?",(project,row["id"])).fetchone()
+    evidence_origin=lineage[0] if lineage else row["id"]
+    links = db.execute("SELECT locator_json,support_hash FROM evidence_links WHERE project_id=? AND subject_type='finding_revision' AND subject_id=? AND artifact_version_id=? AND state='available' ORDER BY id", (project, evidence_origin, row["artifact_version_id"])).fetchall()
     if not links:
         return None
     candidate = {
-        "id": row["id"], "project_id": project, "candidate_type": "finding_revision",
+        "id": evidence_origin, "project_id": project, "candidate_type": "finding_revision",
         "evidence_revision": row["evidence_revision"], "identifier": row["identifier"],
         "namespace": row["namespace"], "scope_key": row["scope_key"],
         "artifact_version_id": row["artifact_version_id"], "binary_build_id": row["binary_build_id"],
         "locator_key": json.loads(links[0]["locator_json"]),
         "support_hashes": sorted({link["support_hash"] for link in links}),
-        "source_run_id": "finding:" + row["id"],
+        "source_run_id": "finding:" + evidence_origin,
     }
     for field in ("native_mapping_id", "type", "offset"):
         value = scope.get(field)
@@ -246,7 +248,7 @@ def _candidate_at(db, project: str, offset: int, *, run_id: str | None = None,
 def _stale_unavailable_findings(db: sqlite3.Connection, project: str) -> int:
     changed=db.execute("""UPDATE hints AS h SET state='stale'
         WHERE h.project_id=? AND h.candidate_type='finding_revision' AND h.state<>'stale'
-        AND (NOT EXISTS(SELECT 1 FROM evidence_links e JOIN finding_revisions r
+        AND (NOT EXISTS(SELECT 1 FROM findings f WHERE f.project_id=h.project_id AND f.archived_at IS NULL AND COALESCE((SELECT evidence_origin_id FROM finding_revision_lineage l WHERE l.project_id=f.project_id AND l.revision_id=f.current_revision_id),f.current_revision_id)=h.candidate_id) OR NOT EXISTS(SELECT 1 FROM evidence_links e JOIN finding_revisions r
                 ON r.project_id=e.project_id AND r.id=e.subject_id
                 WHERE e.project_id=h.project_id AND e.subject_type='finding_revision'
                 AND e.subject_id=h.candidate_id AND e.state='available'

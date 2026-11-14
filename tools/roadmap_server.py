@@ -166,7 +166,7 @@ def transact(payload: object) -> dict:
 def workspace_read(parsed):
     """Strict versioned read adapter; project selection is never implicit."""
     params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
-    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id", "merge_id", "repository_id", "portable", "compensation_id"}
+    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id", "merge_id", "repository_id", "portable", "compensation_id", "subject_type", "subject_id"}
     if set(params) - allowed or any(len(values) != 1 for values in params.values()):
         raise RoadmapError(400, "Unknown or duplicate workspace parameter")
     values = {key: item[0] for key, item in params.items()}
@@ -216,6 +216,9 @@ def workspace_read(parsed):
         if set(options)-{'ancestor_id','portable'}:
             raise RoadmapError(400,'Unsupported exchange export parameter')
         return _store().exchange_preview(project_id,ancestor_id=options.get('ancestor_id'),portable=options.get('portable',False))
+    if len(path)==2 and path[1] in {'finding-revisions','evidence-links','evidence-changes','research-review-notices'}:
+        if set(options)-{'subject_type','subject_id','limit','cursor'}:raise RoadmapError(400,'Unsupported finding history parameter')
+        return _store().read_v1(path[1],project_id,**options)
     if path==['v1','merge-compensations']:
         if set(options)-{'task_id','merge_id','compensation_id','limit','cursor'}:raise RoadmapError(400,'Unsupported compensation audit parameter')
         return _store().read_v1('merge-compensations',project_id,**options)
@@ -624,7 +627,7 @@ def checkpoint_before_upgrade(path):
         version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return None
-    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
+    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
         raise RoadmapError(503, 'Unsupported task database schema; no migration attempted')
     from migrate_roadmap import backup_database
     def file_hash(target):

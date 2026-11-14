@@ -104,3 +104,33 @@ mappings stay in the app database and are not project configuration or portable
 research data. Exchange snapshots retain their original keys and hashes, journal
 source records remain unchanged, and merge recovery translates a scoped view.
 Public aliases remain attached to their original task UUIDs.
+
+## Publish findings with pinned support
+
+Use `create_finding` through `/v1/transactions` with `claim`, `scope`, authored
+`classification`, `uncertainty`, and an `evidence` array. Each source descriptor
+contains `artifact_version_id`, exact `locator`, `method`, and `limitations`.
+A scope may name project-local task UUID, area, occurrence and source version;
+explicit identifier/namespace/scope keys enable deterministic question matching.
+Unsourced findings are allowed and remain visibly unsupported. A classification
+is an author assertion, not platform-granted forensic acceptance.
+
+Use `revise_finding` with `finding_id`, `expected_record_revision`, `fields` and
+`rationale`. Claim/scope/classification/support changes create a new evidence
+origin; uncertainty edits are editorial and preserve prior hint decisions. Read
+`/v1/finding-revisions?project_id=...&subject_id=<finding-id>` for history and
+`/v1/evidence-links?project_id=...&subject_type=finding_revision&subject_id=<evidence-origin-id>`
+for support. Both reads are bounded and have snapshot-bound cursors. Supported
+finding edits also accept explicit record concurrency with a `finding` guard.
+
+`archive_finding` and `restore_finding` retain history and require the finding
+record revision plus rationale. Restoring does not erase stale hint decisions.
+`set_evidence_state` requires the source link ID, `expected_state`, new state
+(`retracted` or `superseded`) and reason; supersession also names a distinct
+available `replacement_id`. This operation uses global concurrency. It records
+immutable evidence history and project review notices without reviving old source
+links. Reads: `/v1/evidence-changes` and `/v1/research-review-notices`.
+
+Finding publication and imports queue durable local matching; publication alone
+does not resolve a question. Evidence-gated answer proposals, independent review
+and resolution remain a separate lifecycle gate while that API is unfinished.
