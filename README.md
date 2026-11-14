@@ -53,7 +53,8 @@ implemented; see [self-hosting](docs/self-hosting.md). Opt-in batched
 Live/offline reconnect and explicit host-claim APIs are implemented.
 [Explicit record concurrency](docs/record-concurrency.md) lets supported unrelated
 edits proceed with scoped revision guards. [Reviewed merge compensation](docs/merge-compensation.md) is implemented through
-the scoped API. Cross-project import namespace handling, findings/answer lifecycle,
+the scoped API. Project-scoped task imports preserve repeated labels across
+independent repositories through local storage mappings. Findings/answer lifecycle,
 project migration, collaboration UI integration and final end-to-end/scale
 acceptance remain open. Doctor reports pending
 synchronization explicitly. A successful connection is not evidence that research

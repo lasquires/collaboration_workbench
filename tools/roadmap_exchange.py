@@ -10,9 +10,9 @@ import json
 import re
 
 try:
-    from . import roadmap_research as research
+    from . import roadmap_research as research, workspace_task_namespace as task_namespace
 except ImportError:
-    import roadmap_research as research
+    import roadmap_research as research, workspace_task_namespace as task_namespace
 
 OPS = {'register_exchange_snapshot', 'import_bundle'}
 RESOURCES = {'exchange'}
@@ -30,16 +30,22 @@ _HOST_PATH = re.compile(r"(?i)(?:[a-z]:[\\/]|\\\\|(?:^|[\s(=])/(?!/))")
 
 def _portable_path_check(value, known_roots):
     if isinstance(value, dict):
-        for item in value.values(): _portable_path_check(item, known_roots)
+        for key,item in value.items():
+            _portable_path_check(key, known_roots)
+            _portable_path_check(item, known_roots)
     elif isinstance(value, list):
         for item in value: _portable_path_check(item, known_roots)
     elif isinstance(value, str):
-        if any(root and (root in value or root.replace('\\','/') in value) for root in known_roots) or _HOST_PATH.search(value):
-            research.error(409, 'Portable exchange contains a host path; review source text before sharing')
+        # Inspect decoded JSON before path syntax: nested canonical action keys
+        # escape quotes with doubled backslashes, which are not UNC paths.
         if value.startswith(('{','[')):
             try: nested=json.loads(value)
-            except ValueError: return
-            _portable_path_check(nested, known_roots)
+            except ValueError: pass
+            else:
+                _portable_path_check(nested, known_roots)
+                return
+        if any(root and (root in value or root.replace('\\','/') in value) for root in known_roots) or _HOST_PATH.search(value):
+            research.error(409, 'Portable exchange contains a host path; review source text before sharing')
 
 
 
@@ -158,6 +164,7 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
         found=db.execute('SELECT * FROM principals WHERE id=?',(identity,)).fetchone()
         if found is not None: principals[identity]=_encode(found)
     rows['principals']=sorted(principals.values(),key=lambda r:_key(schema,'principals',r))
+    task_namespace.export_records(db,project_id,rows)
     bundle = {'format':_PORTABLE_FORMAT if portable else 'ssg2-exchange','version':2 if portable else 1,'project_id':project_id,'schema':schema,'ancestor_id':ancestor_id,'records':rows,'history':history}
     if portable:
         roots=[row[0] for row in db.execute('SELECT path FROM artifact_roots WHERE project_id=?',(project_id,)) if not row[0].startswith('workspace-root:')]
@@ -259,10 +266,8 @@ def _validate(db, project, bundle):
             if table=='tasks' and ((row['parent_id'] is not None and row['parent_id'] not in task_ids) or (row['area_id'] is not None and row['area_id'] not in area_ids)):
                 research.error(400,'Foreign task parent or area')
     validations={r['id']:r for r in bundle['records']['validation_records']}
+    task_namespace.validate_tasks(db,project,bundle['records']['tasks'])
     for row in bundle['records']['tasks']:
-        local=db.execute('SELECT uid,project_id FROM tasks WHERE id=?',(row['id'],)).fetchone()
-        if local is not None and (local['uid']!=row['uid'] or local['project_id']!=row['project_id']):
-            research.error(409,'Task identity collision cannot alter uid or project')
         if row['acceptance_state']=='passed':
             validation=validations.get(row['validation_id'])
             if not validation or validation['task_id']!=row['uid'] or validation['outcome']!='passed' or validation['gate_revision']!=row['gate_revision']:
@@ -445,6 +450,9 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
     db.execute('SAVEPOINT exchange_apply')
     try:
         local_schema=_schema(db)
+        task_keys,task_bindings=task_namespace.prepare_import(db,project,bundle['records']['tasks'])
+        for binding in task_bindings:
+            db.execute('INSERT OR IGNORE INTO task_exchange_keys VALUES(?,?,?)',binding)
         for change in preview['changes']:
             table=change['table']
             if change['status'] in ('identical','keep-deleted'):continue
@@ -455,8 +463,9 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
                 selected=alternatives['remote'] if remote else alternatives['local']
                 primary=[column['name'] for column in local_schema[table] if column['pk']]
                 if selected is None:
-                    db.execute(f"DELETE FROM {table} WHERE {' AND '.join(column+'=?' for column in primary)}",tuple(json.loads(change['key'])))
+                    db.execute(f"DELETE FROM {table} WHERE {' AND '.join(column+'=?' for column in primary)}",tuple(task_keys.get(key,key) if table=='task_links' and column in ('source_id','target_id') else key for column,key in zip(primary,json.loads(change['key']))))
                 else:
+                    if table=='task_links':selected=task_namespace.link_record(selected,task_keys)
                     columns=list(selected);values=tuple(selected[column] for column in columns)
                     mutable=[column for column in columns if column not in primary]
                     db.execute(f"INSERT INTO {table} ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)}) ON CONFLICT({','.join(primary)}) DO UPDATE SET {','.join(column+'=excluded.'+column for column in mutable)}",values)
@@ -494,6 +503,8 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
                     if dict(existing)!=row:
                         research.error(409,'Global principal identity conflicts with local history')
                     continue
+            if table=='tasks':row=task_namespace.task_record(row,task_keys)
+            elif table=='task_links':row=task_namespace.link_record(row,task_keys)
             if table=='artifact_blobs': row['body']=base64.b64decode(row['body']['base64'])
             columns=list(row); pk=[c['name'] for c in bundle['schema'][table] if c['pk']]
             if change['status']=='addition':

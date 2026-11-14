@@ -94,3 +94,13 @@ Use the service's merge/reversal previews. When later work prevents exact undo,
 use [reviewed compensation](merge-compensation.md): choose original/current for
 each proposed change, retain later work deliberately, and inspect the immutable
 audit. Never restore an old SQLite file to undo a task edit or merger.
+
+## Task identities when connecting several repositories
+
+Use project UUID plus task UUID for integrations. Labels such as `TODO` or `C01`
+may be repeated in independent projects. The app maps imported storage keys
+locally; do not rename another project's tasks to avoid a label collision. Those
+mappings stay in the app database and are not project configuration or portable
+research data. Exchange snapshots retain their original keys and hashes, journal
+source records remain unchanged, and merge recovery translates a scoped view.
+Public aliases remain attached to their original task UUIDs.

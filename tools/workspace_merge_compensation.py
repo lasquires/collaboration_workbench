@@ -3,9 +3,9 @@ import json
 import uuid
 from datetime import datetime,timezone
 try:
-    from . import roadmap_research as research
+    from . import roadmap_research as research, workspace_task_namespace as task_namespace
 except ImportError:
-    import roadmap_research as research
+    import roadmap_research as research, workspace_task_namespace as task_namespace
 
 
 def create_schema(db):
@@ -28,7 +28,7 @@ def _presence(mapping,key):return {'present':key in mapping,'value':mapping.get(
 def _history(db,project,merge):
     structure=_structure()
     try:
-        snapshots=[json.loads(merge[field]) for field in ('before_json','after_json')]
+        snapshots=[task_namespace.snapshot(db,project,json.loads(merge[field]),to_local=True) for field in ('before_json','after_json')]
         sets=[]
         for snapshot in snapshots:
             if not isinstance(snapshot,dict) or any(not isinstance(snapshot.get(key),list) for key in ('tasks','links','containment')):raise ValueError()

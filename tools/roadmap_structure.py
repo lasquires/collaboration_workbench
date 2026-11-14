@@ -8,9 +8,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 try:
-    from . import roadmap_research as research, roadmap_schema
+    from . import roadmap_research as research, roadmap_schema, workspace_task_namespace as task_namespace
 except ImportError:
-    import roadmap_research as research, roadmap_schema
+    import roadmap_research as research, roadmap_schema, workspace_task_namespace as task_namespace
 
 OPS={'move_task','attach_child','detach_child','archive_task','reopen_task',
      'claim_task','heartbeat_claim','handoff_claim','release_claim','record_attempt',
@@ -257,12 +257,12 @@ def finalize_merges(db,request_id):
         after=_merge_snapshot(db,merge['project_id'],marker['task_ids'],(merge['survivor_id'],merge['absorbed_id']))
         revisions={row['uid']:row['revision'] for row in after['tasks']}
         db.execute('UPDATE merge_records SET after_json=?,touched_revisions_json=? WHERE project_id=? AND id=?',
-                   (research.canonical(after),research.canonical(revisions),merge['project_id'],merge['id']))
+                   (research.canonical(task_namespace.snapshot(db,merge['project_id'],after)),research.canonical(revisions),merge['project_id'],merge['id']))
 
 
 def preview_merge_reversal(db,project,merge_id):
     merge=research.scoped(db,'merge_records',project,merge_id)
-    after=json.loads(merge['after_json']);before=json.loads(merge['before_json'])
+    after=task_namespace.snapshot(db,project,json.loads(merge['after_json']),to_local=True);before=task_namespace.snapshot(db,project,json.loads(merge['before_json']),to_local=True)
     current=_merge_snapshot(db,project,[row['uid'] for row in after['tasks']],(merge['survivor_id'],merge['absorbed_id']))
     can_reverse=merge['reversed_by'] is None and current==after
     return {'merge_id':merge['id'],'survivor_id':merge['survivor_id'],'absorbed_id':merge['absorbed_id'],
@@ -280,8 +280,8 @@ def _apply_merge(db,project,principal,op,request_id,row,rationale):
         preview=preview_merge_reversal(db,project,merge['id'])
         if not preview['can_reverse'] or preview['guard_digest']!=op.get('preview_guard'):
             research.error(409,'Merge reversal conflicts with current state; inspect reversal preview and plan compensation')
-        before=json.loads(merge['before_json']);pair=(merge['survivor_id'],merge['absorbed_id'])
-        after_rows={item['uid']:item for item in json.loads(merge['after_json'])['tasks']}
+        before=task_namespace.snapshot(db,project,json.loads(merge['before_json']),to_local=True);pair=(merge['survivor_id'],merge['absorbed_id'])
+        after_rows={item['uid']:item for item in task_namespace.snapshot(db,project,json.loads(merge['after_json']),to_local=True)['tasks']}
         restore_tasks=[item for item in before['tasks'] if item!=after_rows[item['uid']]]
         legacy=[task_row(db,project,uid)['id'] for uid in pair]
         db.execute('DELETE FROM task_links WHERE source_id IN (?,?) OR target_id IN (?,?)',(*legacy,*legacy))
@@ -349,7 +349,7 @@ def _apply_merge(db,project,principal,op,request_id,row,rationale):
             db.execute('UPDATE tasks SET record_json=?,updated_at=? WHERE uid=?',(research.canonical(source_record),current,source['uid']))
     identity=str(uuid.uuid4())
     db.execute('INSERT INTO merge_records VALUES(?,?,?,?,?,?,?,?,?,?)',
-               (identity,project,row['uid'],absorbed['uid'],research.canonical(before),'{}',
+               (identity,project,row['uid'],absorbed['uid'],research.canonical(task_namespace.snapshot(db,project,before)),'{}',
                 research.canonical({'pending_request':request_id,'task_ids':sorted(touched)}),None,principal,current))
     db.execute('INSERT INTO task_redirects VALUES(?,?,?,?,1)',(project,absorbed['uid'],row['uid'],identity))
     mutated=dependency_changes|{row['uid'],absorbed['uid']}|{edge['child_id'] for edge in before['containment'] if edge['parent_id']==absorbed['uid']}
