@@ -100,6 +100,34 @@ class SharedHttpTests(unittest.TestCase):
         owner_id=self.store.read_v1('capabilities',self.project)['capabilities']['local_principal_id']
         self.assertEqual(403,self.request(path+'&principal_id='+owner_id,self.member_token)[0])
 
+    def test_scoped_compensation_preview_apply_and_exact_replay(self):
+        actor={'principal_id':self.member_id}
+        create={'project_id':self.project,'actor':actor,'request_id':'compensation-http-create','expected_revision':self.store.snapshot()['revision'],'operations':[{'op':'create','alias':name,'record':{'title':name,'status':'ready'}} for name in ('COMP-A','COMP-B')]}
+        self.assertEqual(200,self.request('/v1/transactions',self.member_token,create)[0])
+        preview=self.store.merge_preview(self.project,'COMP-A','COMP-B')['preview']
+        task=self.store.read_v1('context',self.project,key='COMP-A')['context']['task']
+        merge={'project_id':self.project,'actor':actor,'request_id':'compensation-http-merge','expected_revision':self.store.snapshot()['revision'],'operations':[{'op':'merge_tasks','task_id':task['id'],'absorbed_id':preview['absorbed_id'],'expected_record_revision':task['record_revision'],'preview_guard':preview['guard_digest'],'choices':{key:'survivor' for key in preview['field_conflicts']},'metadata_choices':{key:'survivor' for key in preview['metadata_conflicts']},'source_references':['Synthetic workflow HTTP fixture'],'rationale':'Test scoped merge'}]}
+        self.assertEqual(200,self.request('/v1/transactions',self.member_token,merge)[0])
+        with self.store._connection() as db:merge_id=db.execute('SELECT id FROM merge_records').fetchone()[0]
+        path='/v1/tasks/merge-compensation-preview?project_id='+self.project+'&merge_id='+merge_id
+        before=self.store.snapshot();status,envelope=self.request(path,self.member_token)
+        self.assertEqual(status,200);self.assertEqual(before,self.store.snapshot())
+        self.assertEqual(401,self.request(path)[0])
+        other=path.replace(self.project,self.other)
+        self.assertEqual(403,self.request(other,self.member_token)[0]);self.assertEqual(404,self.request(other,self.owner_token)[0])
+        review=envelope['preview'];task=self.store.read_v1('context',self.project,key='COMP-A')['context']['task']
+        payload={'project_id':self.project,'actor':actor,'request_id':'compensation-http-apply','expected_revision':envelope['revision'],'operations':[{'op':'compensate_merge','task_id':task['id'],'expected_record_revision':task['record_revision'],'merge_id':merge_id,'preview_guard':review['guard_digest'],'choices':{action['key']:'original' for action in review['actions']},'source_references':['Synthetic workflow HTTP fixture'],'rationale':'Apply reviewed compensation'}]}
+        self.assertEqual(200,self.request('/v1/transactions',self.member_token,payload)[0])
+        self.assertEqual(200,self.request('/v1/transactions',self.member_token,payload)[0])
+        with self.store._connection() as db:self.assertEqual(db.execute('SELECT count(*) FROM merge_compensations').fetchone()[0],1)
+        self.assertNotIn('redirect',self.store.read_v1('context',self.project,key='COMP-B'))
+        audit_path='/v1/merge-compensations?project_id='+self.project
+        status,audits=self.request(audit_path,self.member_token);self.assertEqual(status,200)
+        audit_id=audits['items'][0]['id']
+        detail=self.request(audit_path+'&compensation_id='+audit_id,self.member_token)
+        self.assertEqual(detail[0],200);self.assertEqual(detail[1]['items'][0]['preview']['merge_id'],merge_id)
+        self.assertEqual(403,self.request(audit_path.replace(self.project,self.other),self.member_token)[0])
+
     def test_missing_auth_and_legacy_routes_are_blocked(self):
         self.assertEqual(401, self.request('/v1/projects')[0])
         self.assertEqual(403, self.request('/api/tasks', self.owner_token)[0])

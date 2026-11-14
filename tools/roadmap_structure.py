@@ -15,7 +15,7 @@ except ImportError:
 OPS={'move_task','attach_child','detach_child','archive_task','reopen_task',
      'claim_task','heartbeat_claim','handoff_claim','release_claim','record_attempt',
      'resolve_attempt','record_validation','complete_task','set_task_scope','record_blocker','resolve_blocker',
-     'merge_tasks','reverse_merge'}
+     'merge_tasks','reverse_merge','compensate_merge'}
 RESOURCES={'attempts','validations','blockers','claims'}
 
 
@@ -394,6 +394,12 @@ def apply_operation(db,project,principal,op,request_id):
     rationale=research.text(op.get('rationale'),'operation rationale')
     caps=_caps(db,project,principal)
     kind=op['op']; record=json.loads(row['record_json']); before=dict(row)
+    if kind=='compensate_merge':
+        try:
+            from . import workspace_merge_compensation
+        except ImportError:
+            import workspace_merge_compensation
+        return workspace_merge_compensation.apply_compensation(db,project,principal,op,request_id,row,rationale)
     if kind in ('merge_tasks','reverse_merge'): return _apply_merge(db,project,principal,op,request_id,row,rationale)
     if db.execute('SELECT 1 FROM task_redirects WHERE project_id=? AND absorbed_id=? AND active=1',(project,row['uid'])).fetchone(): research.error(409,'Task was merged; use its survivor or reverse the merge')
     changed={row['uid']}; structure=set(); current=now().isoformat()

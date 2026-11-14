@@ -52,8 +52,10 @@ implemented; see [self-hosting](docs/self-hosting.md). Opt-in batched
 [Git sharing and field conflict review](docs/git-sharing.md) are implemented.
 Live/offline reconnect and explicit host-claim APIs are implemented.
 [Explicit record concurrency](docs/record-concurrency.md) lets supported unrelated
-edits proceed with scoped revision guards. Complete merge conflict compensation,
-collaboration UI integration and final end-to-end/scale acceptance remain open. Doctor reports pending
+edits proceed with scoped revision guards. [Reviewed merge compensation](docs/merge-compensation.md) is implemented through
+the scoped API. Cross-project import namespace handling, findings/answer lifecycle,
+project migration, collaboration UI integration and final end-to-end/scale
+acceptance remain open. Doctor reports pending
 synchronization explicitly. A successful connection is not evidence that research
 has synchronized, and workflow completion never establishes forensic correctness.
 

@@ -17,9 +17,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange, workspace_concurrency
+    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange, workspace_concurrency, workspace_merge_compensation
 except ImportError:
-    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange, workspace_concurrency
+    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange, workspace_concurrency, workspace_merge_compensation
 
 SCHEMA_VERSION = 1
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
@@ -424,6 +424,8 @@ class RoadmapStore:
                     except ImportError:
                         import workspace_repository_service
                     return workspace_repository_service.read(db,project_id,resource=resource,**options)
+                if resource=='merge-compensations':
+                    return workspace_merge_compensation.read(db,project_id,**options)
                 if resource in roadmap_structure.RESOURCES:
                     return roadmap_structure.read(db, resource, project_id, **options)
                 return roadmap_projection.read_projection(db, resource, project_id, **options)
@@ -491,6 +493,16 @@ class RoadmapStore:
                         'preview':roadmap_structure.preview_merge_reversal(db,project_id,merge_id)}
             finally:
                 db.rollback()
+
+    def merge_compensation_preview(self, project_id, merge_id):
+        with self._connection() as db:
+            db.execute('BEGIN')
+            try:
+                roadmap_projection._coverage(db,project_id)
+                return {'api_version':roadmap_projection.API_VERSION,'project_id':project_id,
+                        'revision':self._revision(self._meta(db)),
+                        'preview':workspace_merge_compensation.preview_merge_compensation(db,project_id,merge_id)}
+            finally:db.rollback()
 
     def merge_preview(self, project_id, survivor_id, absorbed_id):
         with self._connection() as db:
@@ -682,6 +694,7 @@ class RoadmapStore:
                 tasks, links = self._state(db)
                 before = _copy(tasks)
                 metadata_before = {row['uid']:dict(row) for row in db.execute('SELECT * FROM tasks')}
+                pending_compensations=[]
                 structure_ids = set()
                 task_state_ids=set();task_state_legacy=set()
                 validated_tasks = set()
@@ -698,6 +711,8 @@ class RoadmapStore:
                         tasks,links = self._state(db)
                         structure_ids.update(change.pop('structure_task_ids',[]))
                         task_state_ids.update(change.pop('changed_task_ids',[]))
+                        pending=change.pop('pending_compensation',None)
+                        if pending:pending_compensations.append(pending)
                         event = change.pop('event')
                         event_data.append((change['legacy_id'],operation['op'],event))
                         if operation['op']=='complete_task':
@@ -787,6 +802,7 @@ class RoadmapStore:
                     self._event(db, request_id, task_id, actor, kind, details,
                                 principal_id=_workspace["payload"]["actor"]["principal_id"] if _workspace else None)
                 roadmap_structure.finalize_merges(db,request_id)
+                workspace_merge_compensation.finalize_compensations(db,pending_compensations)
                 db.execute("UPDATE store_meta SET revision=revision+1")
                 result = self._snapshot(db)
                 if _workspace:

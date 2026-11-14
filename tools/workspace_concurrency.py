@@ -111,6 +111,13 @@ def check_records(db,payload,operations):
             elif name=='merge_tasks':
                 preview=structure.preview_merge(db,project,row['uid'],operation.get('absorbed_id'))
                 for identity in preview['guards']:task(identity);task(identity,True)
+            elif name=='compensate_merge':
+                try:
+                    from . import workspace_merge_compensation
+                except ImportError:
+                    import workspace_merge_compensation
+                preview=workspace_merge_compensation.preview_merge_compensation(db,project,operation.get('merge_id'))
+                for identity in preview['guards']:task(identity);task(identity,True)
             elif name=='reverse_merge':
                 merge=research.scoped(db,'merge_records',project,operation.get('merge_id'))
                 for original in json.loads(merge['after_json'])['tasks']:task(original['uid']);task(original['uid'],True)

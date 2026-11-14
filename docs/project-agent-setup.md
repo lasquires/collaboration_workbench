@@ -86,3 +86,11 @@ unrelated tasks, questions or documents in tandem. Supply guards for every affec
 record and parent scope; keep the exact request ID/payload for uncertain retries.
 Global mode remains required for bulk synchronization and unsupported operations.
 Never silently refresh a stale guard after 409.
+
+
+## Reconcile task identity changes
+
+Use the service's merge/reversal previews. When later work prevents exact undo,
+use [reviewed compensation](merge-compensation.md): choose original/current for
+each proposed change, retain later work deliberately, and inspect the immutable
+audit. Never restore an old SQLite file to undo a task edit or merger.

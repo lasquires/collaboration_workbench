@@ -16,8 +16,8 @@ except ImportError:
 
 OPS = {'register_exchange_snapshot', 'import_bundle'}
 RESOURCES = {'exchange'}
-TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries'.split())
-IMMUTABLE = set('principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries'.split())
+TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries merge_compensations'.split())
+IMMUTABLE = set('principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries merge_compensations'.split())
 # Only mutable relationships have row-removal semantics. Evidence/history rows
 # remain append-only; unknown-base omissions never establish a deletion.
 PRESENCE_TABLES = {'task_links'}
@@ -166,6 +166,12 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
     return bundle
 
 
+def _compatible_schema(db,schema):
+    current=_schema(db)
+    return (set(current)-set(schema)<={'task_journal_entries','merge_compensations'}
+            and not set(schema)-set(current) and all(schema[key]==current[key] for key in schema))
+
+
 def _validate(db, project, bundle):
     if not isinstance(bundle,dict) or set(bundle) != {'format','version','project_id','schema','ancestor_id','records','history','id'}:
         research.error(400,'Invalid exchange envelope')
@@ -180,7 +186,7 @@ def _validate(db, project, bundle):
         research.error(400,'Exchange content hash mismatch')
     portable=(bundle['format'],bundle['version'])==(_PORTABLE_FORMAT,2)
     if ((not portable and (bundle['format'],bundle['version'])!=('ssg2-exchange',1))
-            or bundle['project_id']!=project or bundle['schema'] not in (_schema(db),{key:value for key,value in _schema(db).items() if key!='task_journal_entries'})):
+            or bundle['project_id']!=project or not _compatible_schema(db,bundle['schema'])):
         research.error(409,'Exchange project or schema mismatch')
     if set(bundle['records'])!=set(bundle['schema']):
         research.error(400,'Exchange table whitelist mismatch')
@@ -214,6 +220,12 @@ def _validate(db, project, bundle):
                 try: raw=base64.b64decode(row['body']['base64'],validate=True)
                 except (ValueError,KeyError,TypeError): research.error(400,'Invalid blob encoding')
                 if hashlib.sha256(raw).hexdigest()!=row['sha256']: research.error(400,'Artifact blob hash mismatch')
+            if table=='merge_compensations':
+                try:
+                    from . import workspace_merge_compensation
+                except ImportError:
+                    import workspace_merge_compensation
+                workspace_merge_compensation.validate_public_audit(row,project,{task.get('uid') for task in bundle['records']['tasks'] if isinstance(task.get('uid'),str)})
             if table=='task_journal_entries':
                 try:
                     source=json.loads(row['source_event_json']);details=json.loads(row['details_json'])
