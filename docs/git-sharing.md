@@ -90,3 +90,30 @@ Existing portable path checks also apply to journal text. If an entry includes a
 machine-specific absolute path, automatic sharing pauses for explicit review;
 it does not silently redact or alter the original note. Use repository-relative
 evidence references in new shared notes.
+
+
+## Removing relationships
+
+Task-link removal participates in the same ancestry-aware merge as edits. A link
+present in the reviewed common snapshot and absent from a later full snapshot can
+be removed. A snapshot with no known common base cannot delete a local link just
+by omitting it. Immutable research records and journal entries do not acquire
+row-deletion semantics.
+
+Removal versus a concurrent change to the same link requires an explicit choice.
+The conflict preview labels that alternative `$presence` and includes the original
+row, local row or absence, and remote row or absence. Choosing either side keeps
+the alternatives in the immutable import review. Field choices remain pinned to
+the reviewed remote tip and local service revision.
+
+Git clients compare against their own last accepted snapshot, even if several
+remote commits have arrived since then. The preview records that `merge_base_id`
+separately from the incoming snapshot's original `ancestor_id`; the original bundle
+hash and raw history remain unchanged. A first-time connection has no assumed
+common base and requires explicit bootstrap review. Rewritten/deleted Git history
+is rejected before applying newly fetched data.
+
+The task's compatibility `dependencies` list mirrors the final reviewed dependency
+graph. It is rebuilt from those links after applying choices, so choosing to keep
+a dependency cannot leave its task fields saying it was removed. Original task
+records and the incoming snapshots remain unchanged in history.

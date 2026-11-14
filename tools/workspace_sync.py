@@ -140,6 +140,7 @@ class WorkspaceGitSync:
         for source in sources:
             if source:
                 for table, rows in source['records'].items():
+                    if table in exchange.PRESENCE_TABLES:continue
                     for row in rows:
                         records[table].setdefault(exchange._key(bundle['schema'], table, row), row)
         bundle['records'] = {table: [rows[key] for key in sorted(rows)]
@@ -168,24 +169,26 @@ class WorkspaceGitSync:
         if not found:
             self._transact({'op': 'register_exchange_snapshot', 'bundle': bundle})
 
-    def _import(self, bundle, ancestor_bundle=None, choices=None, reviewed_revision=None):
+    def _import(self, bundle, ancestor_bundle=exchange.DECLARED_ANCESTOR, choices=None, reviewed_revision=None):
         self._safe(bundle)
         with self.store._connection() as db:
             imported = db.execute('SELECT 1 FROM exchange_imports WHERE project_id=? AND id=?',
                                   (self.project_id, bundle['id'])).fetchone()
         if imported:
             return []
-        if ancestor_bundle and bundle['ancestor_id'] == ancestor_bundle['id']:
-            self._register(ancestor_bundle)
+        merge_args={}
+        if ancestor_bundle is not exchange.DECLARED_ANCESTOR:
+            if ancestor_bundle:self._register(ancestor_bundle)
+            merge_args['merge_base_id']=ancestor_bundle['id'] if ancestor_bundle else None
         try:
-            envelope = self.store.exchange_preview(self.project_id, bundle=bundle)
+            envelope = self.store.exchange_preview(self.project_id, bundle=bundle,**merge_args)
             preview = envelope['preview']
             if reviewed_revision is not None and envelope['revision'] != reviewed_revision:
                 raise SyncConflict({'reason': 'Local service revision changed since preview'})
             conflicts = [c for c in preview['changes'] if any(f['conflict'] for f in c['fields'].values())]
             if conflicts and choices is None:
                 raise SyncConflict({'changes': conflicts, 'missing_sources': preview['missing_sources']})
-            self._transact({'op': 'import_bundle', 'bundle': bundle, 'choices': choices or {}},
+            self._transact({'op': 'import_bundle', 'bundle': bundle, 'choices': choices or {},**merge_args},
                            expected_revision=envelope['revision'])
             return preview['missing_sources']
         except StoreError as exc:
@@ -193,16 +196,21 @@ class WorkspaceGitSync:
                 raise SyncConflict({'service_error': str(exc)}) from None
             raise
 
+    def _verify_remote_lineage(self,remote):
+        accepted=self.transport.accepted()
+        if accepted.tip and (not remote.tip or self.transport._run('merge-base','--is-ancestor',accepted.tip,remote.tip,allow_failure=True).returncode):
+            raise TransportError('Remote data history was deleted or rewritten')
+
     def preview_remote(self):
         """Return the exact remote tip and reviewed service preview for UI choices."""
         remote = self.transport.fetch()
+        self._verify_remote_lineage(remote)
         if not remote.tip:
             raise TransportError('No remote workspace snapshot to review')
         self._safe(remote.payload)
         accepted = self.transport.accepted()
-        if accepted.tip and remote.payload['ancestor_id'] == accepted.payload['id']:
-            self._register(accepted.payload)
-        envelope = self.store.exchange_preview(self.project_id, bundle=remote.payload)
+        if accepted.tip:self._register(accepted.payload)
+        envelope = self.store.exchange_preview(self.project_id, bundle=remote.payload,merge_base_id=accepted.payload['id'] if accepted.tip else None)
         return {'tip': remote.tip, 'bundle_id': remote.payload['id'],
                 'local_revision': envelope['revision'], 'preview': envelope['preview'],
                 'bundle': remote.payload}
@@ -212,6 +220,7 @@ class WorkspaceGitSync:
         if not isinstance(choices, dict):
             raise ValueError('Reviewed field choices must be an object')
         remote = self.transport.fetch()
+        self._verify_remote_lineage(remote)
         if remote.tip != remote_tip or not remote.tip or remote.payload['id'] != bundle_id:
             raise SyncConflict({'reason': 'Remote tip changed since preview'})
         self._safe(remote.payload)
@@ -248,6 +257,7 @@ class WorkspaceGitSync:
         for _ in range(self.max_rounds):
             accepted = self.transport.accepted()
             remote = self.transport.fetch()
+            self._verify_remote_lineage(remote)
             ancestor = accepted.payload if accepted.tip else None
             if remote.tip != accepted.tip and remote.tip:
                 local_before = self._portable(self._export())
@@ -269,6 +279,12 @@ class WorkspaceGitSync:
             def stop_on_advance(base, ours, theirs):
                 if ours == theirs:
                     return theirs
+                if basis is not None and theirs==basis:
+                    # This exact snapshot was already reconciled above. Local
+                    # edits/removals need not be literal supersets of its rows.
+                    return ours
+                if any(ours['records'][table]!=theirs['records'][table] for table in exchange.PRESENCE_TABLES):
+                    raise _RemoteAdvanced()
                 if all(all(row in ours['records'][table] for row in rows)
                        for table, rows in theirs['records'].items()) and all(
                        event in ours['history'] for event in theirs['history']):

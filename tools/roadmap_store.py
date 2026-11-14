@@ -503,7 +503,7 @@ class RoadmapStore:
             finally:
                 db.rollback()
 
-    def exchange_preview(self, project_id, bundle=None, ancestor_id=None, *, portable=False):
+    def exchange_preview(self, project_id, bundle=None, ancestor_id=None, *, portable=False, merge_base_id=roadmap_exchange.DECLARED_ANCESTOR):
         try:
             from . import roadmap_exchange
         except ImportError:
@@ -516,7 +516,7 @@ class RoadmapStore:
                           'revision':self._revision(self._meta(db))}
                 if bundle is None:
                     return {**envelope,'bundle':roadmap_exchange.export_bundle(db,project_id,ancestor_id,portable=portable)}
-                return {**envelope,'preview':roadmap_exchange.preview_import(db,project_id,bundle)}
+                return {**envelope,'preview':roadmap_exchange.preview_import(db,project_id,bundle,merge_base_id=merge_base_id)}
             finally:
                 db.rollback()
 

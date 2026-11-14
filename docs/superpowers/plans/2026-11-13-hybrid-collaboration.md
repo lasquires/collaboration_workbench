@@ -114,3 +114,24 @@ snapshot worker. A transaction acknowledgment is distinct from a current lease.
 Verify competing workers/path reservations, stale revisions, exact replay after
 commit-response loss and restart, offline behavior, principal/host replacement,
 capability enforcement and guest proxy denial using actual authenticated HTTP.
+
+
+### Relationship presence and actual common bases
+
+Treat mutable task-link row presence as part of the merge. Compare the incoming
+and local full row against a reviewed common snapshot: compatible removal applies,
+unchanged remote content cannot revive a local removal, and removal versus edited
+metadata requires an explicit row-presence alternative. Do not infer deletion from
+an unknown base or extend this to immutable research/history rows.
+
+Keep the incoming bundle's original lineage/hash unchanged. Git reconciliation
+supplies its actually accepted common snapshot separately as the reviewed merge
+base; initial bootstrap supplies no base. This avoids interpreting an unseen new
+remote link as a local deletion when several commits were missed. Verify lineage
+before remote apply, and refetch/reconcile a rejected push when relationship
+presence changed rather than using a row-superset shortcut.
+
+Acceptance uses real Git remotes, restart/no-op checks, both directions of
+removal-versus-edit review, immutable alternatives, first-install bootstrap,
+multiple missed commits, a rejected push racing remote removal, independent local
+progress, dependency fields and live reconciliation.

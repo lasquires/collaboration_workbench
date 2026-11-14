@@ -140,9 +140,9 @@ class WorkspaceSyncTests(unittest.TestCase):
         original_preview = store.exchange_preview
         injected = False
 
-        def preview_with_concurrent_edit(project_id, bundle=None, ancestor_id=None):
+        def preview_with_concurrent_edit(project_id, bundle=None, ancestor_id=None, **options):
             nonlocal injected
-            result = original_preview(project_id, bundle=bundle, ancestor_id=ancestor_id)
+            result = original_preview(project_id, bundle=bundle, ancestor_id=ancestor_id, **options)
             if bundle is not None and not injected:
                 injected = True
                 self.change_title(1, 'Concurrent local')

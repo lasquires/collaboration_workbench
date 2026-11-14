@@ -18,6 +18,10 @@ OPS = {'register_exchange_snapshot', 'import_bundle'}
 RESOURCES = {'exchange'}
 TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries'.split())
 IMMUTABLE = set('principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries'.split())
+# Only mutable relationships have row-removal semantics. Evidence/history rows
+# remain append-only; unknown-base omissions never establish a deletion.
+PRESENCE_TABLES = {'task_links'}
+DECLARED_ANCESTOR = object()
 canonical = research.canonical
 _PORTABLE_FORMAT = 'workbench-exchange'
 _PORTABLE_HISTORY = {'id','project_id','request_id','actor_id','entity_type','entity_id','kind','recorded_at','payload_sha256'}
@@ -261,17 +265,22 @@ def _fields(row):
     if row is None: return {}
     result=dict(row)
     if 'record_json' in result:
-        result.update({'record_json.'+k:v for k,v in json.loads(result.pop('record_json')).items()})
+        # Dependency arrays mirror task_links; row-presence review owns their
+        # meaning. Do not ask for contradictory choices in a derived copy.
+        result.update({'record_json.'+k:v for k,v in json.loads(result.pop('record_json')).items() if k!='dependencies'})
     return result
 
 
-def preview_import(db, project_id, bundle):
+def preview_import(db, project_id, bundle, *, merge_base_id=DECLARED_ANCESTOR):
     _validate(db,project_id,bundle)
     portable=bundle['format']==_PORTABLE_FORMAT
     local=export_bundle(db,project_id,portable=portable)
     ancestor=None
-    if bundle['ancestor_id']:
-        saved=db.execute('SELECT bundle_json FROM exchange_snapshots WHERE project_id=? AND id=?',(project_id,bundle['ancestor_id'])).fetchone()
+    effective_base=bundle['ancestor_id'] if merge_base_id is DECLARED_ANCESTOR else merge_base_id
+    if effective_base is not None and (not isinstance(effective_base,str) or not re.fullmatch('[0-9a-f]{64}',effective_base)):
+        research.error(400,'Invalid reviewed merge base')
+    if effective_base:
+        saved=db.execute('SELECT bundle_json FROM exchange_snapshots WHERE project_id=? AND id=?',(project_id,effective_base)).fetchone()
         if not saved: research.error(409,'Unknown shared ancestor; register the common snapshot first')
         ancestor=json.loads(saved[0])
         if (ancestor['format'],ancestor['version']) != (bundle['format'],bundle['version']):
@@ -279,8 +288,22 @@ def preview_import(db, project_id, bundle):
     changes=[]
     for table in TABLES:
         ours=_index(local,table); base=_index(ancestor,table) if ancestor else {}
-        for key,theirs in _index(bundle,table).items():
-            current=ours.get(key); original=base.get(key)
+        incoming=_index(bundle,table)
+        keys=set(incoming)|set(base) if table in PRESENCE_TABLES else set(incoming)
+        for key in sorted(keys):
+            theirs=incoming.get(key);current=ours.get(key);original=base.get(key)
+            if table in PRESENCE_TABLES and original is not None and (current is None or theirs is None):
+                fields={}
+                if current==theirs:status='identical'
+                elif current is None and theirs==original:status='keep-deleted'
+                else:
+                    conflict=current!=original and theirs!=original
+                    fields={'$presence':{'base':original,'local':current,'remote':theirs,
+                            'base_present':True,'local_present':current is not None,'remote_present':theirs is not None,
+                            'conflict':conflict,'take_remote':theirs!=original}}
+                    status='conflict' if conflict else 'deletion'
+                changes.append({'table':table,'key':key,'status':status,'fields':fields})
+                continue
             current_fields=_fields(current); original_fields=_fields(original); remote_fields=_fields(theirs)
             fields={}
             missing=object()
@@ -296,7 +319,7 @@ def preview_import(db, project_id, bundle):
     available={r[0] for r in db.execute('SELECT sha256 FROM artifact_blobs WHERE project_id=?',(project_id,))}
     available.update(r['sha256'] for r in bundle['records']['artifact_blobs'])
     missing=sorted({r['sha256'] for r in bundle['records']['artifact_versions'] if r['sha256'] not in available})
-    return {'id':bundle['id'],'ancestor_id':bundle['ancestor_id'],'changes':changes,'missing_sources':missing}
+    return {'id':bundle['id'],'ancestor_id':bundle['ancestor_id'],'merge_base_id':effective_base,'changes':changes,'missing_sources':missing}
 
 
 def _acyclic(nodes, edges, label):
@@ -382,7 +405,7 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
         return {'type':'exchange_snapshot','id':bundle['id']}
     prior=db.execute('SELECT result_json FROM exchange_imports WHERE project_id=? AND id=?',(project,bundle['id'])).fetchone()
     if prior: return json.loads(prior[0])
-    preview=preview_import(db,project,bundle)
+    preview=preview_import(db,project,bundle,merge_base_id=op.get('merge_base_id',DECLARED_ANCESTOR))
     previous = {row['uid']: dict(row) for row in db.execute('SELECT * FROM tasks WHERE project_id=?', (project,))} if review_import else None
     previous_scope = {table: {tuple(row) for row in db.execute(query, (project,))}
                       for table, query in (
@@ -401,10 +424,25 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
     db.execute('PRAGMA defer_foreign_keys=ON')
     db.execute('SAVEPOINT exchange_apply')
     try:
+        local_schema=_schema(db)
         for change in preview['changes']:
-            table=change['table']; incoming=_index(bundle,table)[change['key']]
+            table=change['table']
+            if change['status'] in ('identical','keep-deleted'):continue
+            if table in PRESENCE_TABLES and '$presence' in change['fields']:
+                alternatives=change['fields']['$presence']
+                token=canonical([table,change['key'],'$presence'])
+                remote=choices.get(token)=='remote' if alternatives['conflict'] else alternatives['take_remote']
+                selected=alternatives['remote'] if remote else alternatives['local']
+                primary=[column['name'] for column in local_schema[table] if column['pk']]
+                if selected is None:
+                    db.execute(f"DELETE FROM {table} WHERE {' AND '.join(column+'=?' for column in primary)}",tuple(json.loads(change['key'])))
+                else:
+                    columns=list(selected);values=tuple(selected[column] for column in columns)
+                    mutable=[column for column in columns if column not in primary]
+                    db.execute(f"INSERT INTO {table} ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)}) ON CONFLICT({','.join(primary)}) DO UPDATE SET {','.join(column+'=excluded.'+column for column in mutable)}",values)
+                continue
+            incoming=_index(bundle,table)[change['key']]
             row=dict(incoming)
-            if change['status']=='identical': continue
             if change['status']!='addition':
                 for field,alt in change['fields'].items():
                     token=canonical([table,change['key'],field])
@@ -443,6 +481,16 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
             else:
                 fields=[c for c in columns if c not in pk]
                 db.execute(f"UPDATE {table} SET {','.join(c+'=?' for c in fields)} WHERE {' AND '.join(c+'=?' for c in pk)}",tuple(row[c] for c in fields+pk))
+        # Rebuild the compatibility mirror from the final reviewed dependency
+        # graph, preserving original_json and every source snapshot unchanged.
+        dependencies={}
+        for link in db.execute("SELECT l.source_id,l.target_id FROM task_links l JOIN tasks t ON t.id=l.source_id WHERE t.project_id=? AND l.kind='depends_on' ORDER BY l.source_id,l.target_id",(project,)):
+            dependencies.setdefault(link['source_id'],[]).append(link['target_id'])
+        for task in db.execute('SELECT id,record_json FROM tasks WHERE project_id=?',(project,)).fetchall():
+            record=json.loads(task['record_json']);targets=dependencies.get(task['id'],[])
+            if ('dependencies' in record or targets) and record.get('dependencies')!=targets:
+                record['dependencies']=targets
+                db.execute('UPDATE tasks SET record_json=?,revision=revision+1 WHERE project_id=? AND id=?',(canonical(record),project,task['id']))
         if db.execute('PRAGMA foreign_key_check').fetchone(): research.error(409,'Exchange contains missing or foreign references')
         if review_import: _review_merged_import(db, project, previous, previous_scope)
         # A field merge can alter a validation's gate or reference. Recheck the
