@@ -26,13 +26,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request(base_url, path, payload=None, *, token_file=None):
+def _request_wire(base_url, path, payload=None, *, token_file=None, chunked=False, timeout=5):
     parsed=urlsplit(base_url)
     if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ApiError(0,'Service URL must be HTTP(S) without embedded credentials, query or fragment')
     if not path.startswith('/') or path.startswith('//'):
         raise ApiError(0,'Expected an absolute API path')
-    headers={}
+    headers={"X-Workspace-Chunked":"v1"} if chunked else {}
     token_file=token_file or os.environ.get('RESEARCH_WORKSPACE_TOKEN_FILE')
     if token_file:
         if parsed.scheme!='https' and parsed.hostname not in ('127.0.0.1','localhost','::1'):
@@ -49,11 +49,13 @@ def request(base_url, path, payload=None, *, token_file=None):
     req = urllib.request.Request(base_url.rstrip("/") + path, data=data,
                                  headers={**headers,**({"Content-Type": "application/json"} if data else {})})
     try:
-        with urllib.request.build_opener(_NoRedirect()).open(req, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
+        with urllib.request.build_opener(_NoRedirect()).open(req, timeout=timeout) as response:
+            raw=response.read(8*1024*1024+1) if chunked else response.read()
+            if chunked and len(raw)>8*1024*1024:raise ApiError(0,'Response exceeds bounded transfer protocol')
+            return json.loads(raw.decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:
-            body = json.loads(exc.read().decode("utf-8"))
+            body = json.loads(exc.read(8*1024*1024+1).decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             body = {}
         message = body.get("error", f"HTTP {exc.code}")
@@ -62,6 +64,62 @@ def request(base_url, path, payload=None, *, token_file=None):
         raise ApiError(exc.code, message) from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise ApiError(0, f"Roadmap API unavailable or returned invalid JSON: {exc}") from exc
+
+
+
+def request(base_url,path,payload=None,*,token_file=None,chunked=False,timeout=5):
+    """Opt-in staged RPC preserves exact payload identities and never rebases conflicts."""
+    if not chunked:return _request_wire(base_url,path,payload,token_file=token_file,timeout=timeout)
+    import base64
+    try:
+        from . import workspace_bundle_chunks as codec
+    except ImportError:
+        import workspace_bundle_chunks as codec
+    from urllib.parse import parse_qs
+    project=payload.get('project_id') if isinstance(payload,dict) else parse_qs(urlsplit(path).query).get('project_id',[None])[0]
+    def wire(target,body=None):
+        return _request_wire(base_url,target,body,token_file=token_file,chunked=True,timeout=timeout)
+    def release(body):
+        try:wire('/v1/transfer-release',body)
+        except ApiError:pass  # Expiry cleans lost acknowledgments; domain receipts remain authoritative.
+    def decode(result):
+        if not isinstance(result,dict) or result.get('format')!='workbench-chunked-response':return result
+        if (set(result)!={'format','version','project_id','transfer_id','manifest'} or type(result['version']) is not int or result['version']!=1 or not project or result['project_id']!=project):
+            raise codec.ChunkError('Chunked response project or format mismatch')
+        if not isinstance(result['transfer_id'],str) or str(uuid.UUID(result['transfer_id']))!=result['transfer_id']:raise codec.ChunkError('Invalid response identity')
+        codec.validate_manifest(result['manifest'])
+        body={'project_id':project,'transfer_id':result['transfer_id']}
+        wire_errors=[]
+        def read(digest):
+            try:reply=wire('/v1/transfer-download',{**body,'sha256':digest})
+            except ApiError as error:
+                wire_errors.append(error);raise
+            if not isinstance(reply,dict) or set(reply)!={'sha256','data'} or reply['sha256']!=digest or not isinstance(reply['data'],str):
+                raise codec.ChunkError('Invalid response chunk envelope')
+            return base64.b64decode(reply['data'],validate=True)
+        try:decoded=codec.unpack(result['manifest'],read)
+        except codec.ChunkError:
+            if wire_errors:raise wire_errors[0]
+            raise
+        release(body)
+        return decoded
+    try:
+        if payload is not None and len(codec.canonical(payload))>codec.DEFAULT_CHUNK_BYTES:
+            if not project:raise codec.ChunkError('Large requests require project_id')
+            manifest,chunks=codec.pack(payload)
+            identity=str(uuid.uuid5(uuid.NAMESPACE_URL,'workbench-upload:'+project+':'+path+':'+manifest['payload_sha256']))
+            body={'project_id':project,'transfer_id':identity}
+            begun=wire('/v1/transfer-begin',{**body,'target':path,'manifest':manifest})
+            received=begun.get('received') if isinstance(begun,dict) else None
+            if not isinstance(received,list) or any(digest not in chunks for digest in received):raise codec.ChunkError('Invalid staged resume acknowledgment')
+            for digest,raw in chunks.items():
+                if digest not in received:wire('/v1/transfer-chunk',{**body,'sha256':digest,'data':base64.b64encode(raw).decode('ascii')})
+            result=decode(wire('/v1/transfer-finish',body))
+            release(body)
+            return result
+        return decode(wire(path,payload))
+    except (ValueError,TypeError,KeyError) as error:
+        raise ApiError(0,'Chunked transfer validation failed: '+str(error)) from None
 
 
 def _record(task):

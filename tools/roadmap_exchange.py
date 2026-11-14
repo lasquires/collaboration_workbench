@@ -479,6 +479,7 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
         task_keys,task_bindings=task_namespace.prepare_import(db,project,bundle['records']['tasks'])
         for binding in task_bindings:
             db.execute('INSERT OR IGNORE INTO task_exchange_keys VALUES(?,?,?)',binding)
+        incoming_tables={table:_index(bundle,table) for table in {change['table'] for change in preview['changes']}}
         for change in preview['changes']:
             table=change['table']
             if change['status'] in ('identical','keep-deleted'):continue
@@ -496,7 +497,7 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
                     mutable=[column for column in columns if column not in primary]
                     db.execute(f"INSERT INTO {table} ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)}) ON CONFLICT({','.join(primary)}) DO UPDATE SET {','.join(column+'=excluded.'+column for column in mutable)}",values)
                 continue
-            incoming=_index(bundle,table)[change['key']]
+            incoming=incoming_tables[table][change['key']]
             row=dict(incoming)
             if change['status']!='addition':
                 for field,alt in change['fields'].items():

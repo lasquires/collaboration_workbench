@@ -119,6 +119,38 @@ class TransportTests(unittest.TestCase):
                 with self.assertRaises(ValueError):GitWorkspaceTransport(self.root/'unsafe',remote)
                 run.assert_not_called()
 
+    def test_large_payload_uses_chunk_manifest_and_round_trips(self):
+        client = GitWorkspaceTransport(self.root / 'large', str(self.remote),
+                                       max_payload_bytes=20 * 1024 * 1024)
+        payload = {'text': '🙂' * (3 * 1024 * 1024)}
+        result = client.sync(payload, merge)
+        self.assertTrue(result.pushed)
+        self.assertEqual(client.fetch().payload, payload)
+        raw = git('--git-dir', str(self.remote), 'show', f'{result.tip}:workspace.json')
+        manifest = json.loads(raw)
+        self.assertEqual(manifest['format'], 'workbench-chunked-json')
+        self.assertEqual(len(manifest['chunks']), 4)
+
+    def test_legacy_payload_remains_workspace_json(self):
+        result = self.a.sync({'small': 'legacy'}, merge)
+        raw = git('--git-dir', str(self.remote), 'show', f'{result.tip}:workspace.json')
+        self.assertEqual(json.loads(raw), {'small': 'legacy'})
+        self.assertEqual(self.a.fetch().payload, {'small': 'legacy'})
+
+    def test_explicit_object_limit_does_not_limit_aggregate_payload(self):
+        client = GitWorkspaceTransport(self.root / 'object-bound', str(self.remote),
+                                       max_payload_bytes=20 * 1024 * 1024,
+                                       max_object_bytes=1024*1024)
+        payload = {'text': '🙂' * (3 * 1024 * 1024)}
+        self.assertEqual(client.sync(payload, merge).payload, payload)
+        self.assertEqual(client.fetch().payload,payload)
+
+    def test_impossible_tiny_object_limit_rejects_before_publishing(self):
+        client=GitWorkspaceTransport(self.root/'tiny-object',str(self.remote),max_object_bytes=20)
+        with self.assertRaises(TransportError):client.sync({'text':'x'*100},merge)
+        self.assertIsNone(client.accepted().tip)
+        self.assertEqual(git('ls-remote',str(self.remote)),'')
+
     def test_rejects_source_branches_and_oversize(self):
         with self.assertRaises(ValueError):
             GitWorkspaceTransport(self.root / 'bad', str(self.remote), data_ref='refs/heads/main')

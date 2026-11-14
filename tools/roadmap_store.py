@@ -625,8 +625,10 @@ class RoadmapStore:
         if not isinstance(operations, list) or not operations or len(operations) > 10000:
             raise StoreError(400, "Expected 1–10000 operations")
         payload = _json({"v1": _workspace["payload"]} if _workspace else {"expected_revision": expected_revision, "actor": actor, "operations": operations})
-        if len(payload.encode("utf-8")) > 8_000_000:
-            raise StoreError(400, "Transaction exceeds 8 MB")
+        portable_transfer = bool(_workspace and len(operations)==1 and operations[0].get('op') in {'register_exchange_snapshot','import_bundle'} and isinstance(operations[0].get('bundle'),dict) and operations[0]['bundle'].get('format')=='workbench-exchange' and operations[0]['bundle'].get('version')==2)
+        limit=256*1024*1024 if portable_transfer else 8_000_000
+        if len(payload.encode("utf-8")) > limit:
+            raise StoreError(413 if portable_transfer else 400, "Portable transaction exceeds 256 MiB" if portable_transfer else "Transaction exceeds 8 MB")
         digest = hashlib.sha256(payload.encode()).hexdigest()
         with self._connection() as db:
             db.execute("BEGIN IMMEDIATE")

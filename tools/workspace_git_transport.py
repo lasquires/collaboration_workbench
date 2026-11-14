@@ -15,8 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from tools import workspace_bundle_chunks as chunk_codec
+
 DEFAULT_DATA_REF = 'refs/heads/workbench-data'
 PAYLOAD_PATH = 'workspace.json'
+LEGACY_MAX_BYTES = 8 * 1024 * 1024
+CHUNK_DIR = 'chunks'
 _EMPTY = '0' * 40
 
 
@@ -39,7 +43,7 @@ class Snapshot:
 
 class GitWorkspaceTransport:
     def __init__(self, cache_dir, remote, *, data_ref=DEFAULT_DATA_REF,
-                 max_payload_bytes=8 * 1024 * 1024, max_object_bytes=9 * 1024 * 1024,
+                 max_payload_bytes=chunk_codec.DEFAULT_MAX_BYTES, max_object_bytes=9 * 1024 * 1024,
                  command_timeout=30, max_retries=3):
         if not isinstance(remote, str) or not remote.strip() or remote.startswith('-') or '\n' in remote or '\r' in remote:
             raise ValueError('An explicit project Git remote is required')
@@ -51,7 +55,7 @@ class GitWorkspaceTransport:
                 not re.fullmatch(r'refs/heads/workbench-data(?:/[A-Za-z0-9._/-]+)?', data_ref) or
                 '..' in data_ref or data_ref.endswith('/') or '/.' in data_ref):
             raise ValueError('Data ref must be in the workbench-data namespace')
-        if max_payload_bytes < 2 or max_object_bytes < max_payload_bytes or command_timeout <= 0 or max_retries < 1:
+        if max_payload_bytes < 2 or max_object_bytes < 2 or command_timeout <= 0 or max_retries < 1:
             raise ValueError('Invalid transport bounds')
         self.cache_dir = Path(cache_dir).resolve()
         self.remote = remote
@@ -91,19 +95,15 @@ class GitWorkspaceTransport:
             raise TransportError('Git operation timed out or could not start') from None
 
     def _canonical(self, payload):
-        if not isinstance(payload, dict):
-            raise ValueError('Workspace payload must be a JSON object')
-        raw = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
-                         allow_nan=False).encode('utf-8')
-        if len(raw) > self.max_payload_bytes:
-            raise ValueError('Workspace payload exceeds byte bound')
-        return raw
+        return chunk_codec.canonical(payload, self.max_payload_bytes)
 
     def accepted(self):
         path = self.cache_dir / 'accepted.json'
         if not path.exists():
             return Snapshot(None, {})
         try:
+            if path.stat().st_size > self.max_payload_bytes + 4096:
+                raise ValueError()
             state = json.loads(path.read_text(encoding='utf-8'))
             if state['binding'] != self.binding:
                 raise TransportError('Cache belongs to another project remote or data ref')
@@ -143,20 +143,50 @@ class GitWorkspaceTransport:
             raise TransportError('Unexpected remote data ref')
         self._run('fetch', '--no-tags', self.remote, self.data_ref)
         tip = self._run('rev-parse', 'FETCH_HEAD').stdout.decode('ascii').strip()
-        tree_line = self._run('ls-tree', tip, '--', PAYLOAD_PATH).stdout.decode('ascii').strip()
-        if not tree_line:
-            raise TransportError('Remote data ref has no workspace payload')
-        match = re.fullmatch(r'100644 blob ([a-f0-9]{40,64})\tworkspace\.json', tree_line)
-        if not match:
-            raise TransportError('Remote workspace payload has unexpected type')
-        size = int(self._run('cat-file', '-s', match.group(1)).stdout)
-        if size > self.max_payload_bytes:
-            raise TransportError('Remote workspace payload exceeds byte bound')
-        raw = self._run('cat-file', 'blob', match.group(1)).stdout
+        tree = self._run('ls-tree', '-r', tip).stdout.decode('ascii', 'strict').splitlines()
+        entries = {}
+        for line in tree:
+            match = re.fullmatch(r'(100644) blob ([a-f0-9]{40,64})\t(.+)', line)
+            if not match or match.group(3) in entries:
+                raise TransportError('Remote workspace tree has unexpected type')
+            entries[match.group(3)] = (match.group(1), match.group(2))
+        payload_entry = entries.get(PAYLOAD_PATH)
+        if not payload_entry or any(path != PAYLOAD_PATH and not re.fullmatch(r'chunks/[a-f0-9]{64}', path) for path in entries):
+            raise TransportError('Remote workspace tree has unexpected paths')
+        mode, blob = payload_entry
+        size = int(self._run('cat-file', '-s', blob).stdout)
+        if size > min(self.max_object_bytes, self.max_payload_bytes + 4096):
+            raise TransportError('Remote workspace payload exceeds object bound')
+        raw = self._run('cat-file', 'blob', blob).stdout
+        if len(raw) != size:
+            raise TransportError('Remote workspace payload is truncated')
         try:
-            payload = json.loads(raw)
-            self._canonical(payload)
-        except (ValueError, UnicodeDecodeError, TypeError):
+            header = json.loads(raw)
+            if isinstance(header, dict) and header.get('format') == chunk_codec.FORMAT:
+                chunk_codec.validate_manifest(header, max_total_bytes=self.max_payload_bytes)
+                expected = {f'chunks/{ref["sha256"]}' for ref in header['chunks']}
+                if set(entries) != {PAYLOAD_PATH} | expected:
+                    raise ValueError('Unexpected or missing chunk paths')
+                blobs = {}
+                for ref in header['chunks']:
+                    path = f'chunks/{ref["sha256"]}'
+                    chunk_blob = entries[path][1]
+                    chunk_size = int(self._run('cat-file', '-s', chunk_blob).stdout)
+                    if chunk_size != ref['byte_length'] or chunk_size > min(chunk_codec.DEFAULT_CHUNK_BYTES,self.max_object_bytes):
+                        raise ValueError('Chunk object size is invalid')
+                    data = self._run('cat-file', 'blob', chunk_blob).stdout
+                    if len(data) != chunk_size:
+                        raise ValueError('Chunk object is truncated')
+                    blobs[ref['sha256']] = data
+                payload = chunk_codec.unpack(header, blobs.__getitem__, max_total_bytes=self.max_payload_bytes)
+            else:
+                if size > min(LEGACY_MAX_BYTES, self.max_object_bytes):
+                    raise ValueError('Legacy payload exceeds bound')
+                payload = json.loads(raw)
+                self._canonical(payload)
+                if set(entries) != {PAYLOAD_PATH}:
+                    raise ValueError('Legacy tree has unexpected paths')
+        except (ValueError, UnicodeDecodeError, TypeError, KeyError):
             raise TransportError('Remote workspace payload is invalid') from None
         return Snapshot(tip, payload)
 
@@ -164,8 +194,27 @@ class GitWorkspaceTransport:
 
     def _commit(self, payload, parent):
         raw = self._canonical(payload)
-        blob = self._run('hash-object', '-w', '--stdin', input_bytes=raw).stdout.decode('ascii').strip()
-        tree_input = f'100644 blob {blob}\t{PAYLOAD_PATH}\n'.encode('ascii')
+        paths = [(PAYLOAD_PATH, raw)]
+        if len(raw) > min(LEGACY_MAX_BYTES, self.max_object_bytes):
+            manifest, chunks = chunk_codec.pack(payload, chunk_bytes=min(chunk_codec.DEFAULT_CHUNK_BYTES,self.max_object_bytes), max_total_bytes=self.max_payload_bytes)
+            manifest_raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode('utf-8')
+            paths = [(PAYLOAD_PATH, manifest_raw)]
+            paths.extend((f'{CHUNK_DIR}/{digest}', data) for digest, data in chunks.items())
+        if any(len(data)>self.max_object_bytes for _,data in paths):
+            raise TransportError('Workspace object exceeds configured byte bound')
+        root_entries = []
+        chunk_entries = []
+        for path, data in paths:
+            blob = self._run('hash-object', '-w', '--stdin', input_bytes=data).stdout.decode('ascii').strip()
+            if path.startswith(CHUNK_DIR + '/'):
+                chunk_entries.append((path.split('/', 1)[1], blob))
+            else:
+                root_entries.append((path, blob))
+        if chunk_entries:
+            chunk_input = ''.join(f'100644 blob {blob}\t{name}\n' for name, blob in chunk_entries).encode('ascii')
+            chunk_tree = self._run('mktree', input_bytes=chunk_input).stdout.decode('ascii').strip()
+            root_entries.append((CHUNK_DIR, chunk_tree))
+        tree_input = ''.join(f'{"040000 tree" if name == CHUNK_DIR else "100644 blob"} {blob}\t{name}\n' for name, blob in root_entries).encode('ascii')
         tree = self._run('mktree', input_bytes=tree_input).stdout.decode('ascii').strip()
         args = ['commit-tree', tree]
         if parent:

@@ -7,7 +7,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 FOUNDATION_DDL = [
     "CREATE TABLE projects(id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, goal TEXT NOT NULL DEFAULT '', acceptance_json TEXT NOT NULL DEFAULT '[]', entry_documents_json TEXT NOT NULL DEFAULT '[]', coverage_json TEXT NOT NULL DEFAULT '{}', revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1), created_by TEXT, created_at TEXT, updated_at TEXT, archived_at TEXT)",
@@ -103,7 +103,7 @@ def migrate(db, *, fresh=False, bootstrap_slug="ssg2"):
     version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return
-    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
+    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
         raise ValueError('Unsupported task database schema')
     db.execute('BEGIN IMMEDIATE')
     try:
@@ -184,6 +184,11 @@ def migrate(db, *, fresh=False, bootstrap_slug="ssg2"):
             import workspace_repository_service,workspace_auth
         workspace_repository_service.create_schema(db)
         workspace_auth.create_schema(db)
+        try:
+            from . import workspace_transfer
+        except ImportError:
+            import workspace_transfer
+        workspace_transfer.create_schema(db)
         _migration_checkpoint(db)
         db.execute('UPDATE store_meta SET schema_version=?,revision=revision+?', (SCHEMA_VERSION,0 if fresh else 1))
         if db.execute('PRAGMA foreign_key_check').fetchone():

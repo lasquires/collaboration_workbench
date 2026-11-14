@@ -232,9 +232,34 @@ interpret the display representation as an OS pathname or silently replace its
 bytes. Use the logical `path` for index scope and the hex form for exact Git
 provenance. No source field implies automatic forensic acceptance.
 
-Source capture and transfer have separate limits. The current Git/HTTP transport
-accepts 8 MiB single payloads. A measured synthetic 20,000-token capture produced a
-38 MiB canonical portable bundle, so that workload currently remains local and
-sharing reports a size-limit failure rather than partially applying it remotely.
-Chunked transfer is required for the full default capture workload; reducing the
-indexed data is not a substitute for that delivery gate.
+Source capture and transfer have separate limits. Git stores small bundles in the
+legacy single-object form and large bundles as a manifest plus SHA-256-addressed
+chunks. Live clients opt into `X-Workspace-Chunked: v1`; uploads use
+`/v1/transfer-begin`, `/v1/transfer-chunk` and `/v1/transfer-finish`. A large response
+returns a `workbench-chunked-response` manifest; retrieve its pieces through
+`/v1/transfer-download` and release confirmed staging with `/v1/transfer-release`.
+The Python client supports this through `request(..., chunked=True)`.
+
+Pieces are at most 4 MiB; canonical payloads are bounded to 256 MiB. The existing
+8 MiB HTTP body bound still applies to every individual request. A transfer binds
+its UUID, target, manifest, project and authenticated principal. The host checks
+piece lengths and SHA-256 hashes, the ordered payload digest, and the decoded
+project before dispatching through the original current-authentication and
+revision gates. A partial upload never becomes project data. Retry the same
+frozen request after an uncertain reply; a 409 requires explicit reconciliation.
+Only portable import/snapshot operations have the larger domain transaction
+limit; ordinary mutations retain their existing bound.
+
+Staging is private and excluded from portable records. It expires after 24 hours,
+with at most eight jobs per principal, 64 host jobs and 1 GiB of cached piece data.
+Full staging fails explicitly; release old transfers or wait for expiry. Local
+live state keeps large immutable bundles and previews in hash-verified private
+files outside connected repositories, preserving the exact pending request body
+across restart. Credentials, raw local database files and cache paths are never
+part of the project bundle. The default 20,000-token synthetic committed-source
+fixture and an explicit 50,000-observation/10,000-task fixture pass Git and two
+authenticated live clients with exact observation, occurrence, task-body, journal
+and retained-history comparisons. Run the extended gate with
+`WORKBENCH_SCALE_GATE=1` and
+`python -B -m unittest tests.test_workspace_large_sync.SourceRoundtripTests`.
+These transfer checks do not establish whole-product delivery or native parity.

@@ -60,9 +60,11 @@ independent repositories through local storage mappings. Authored finding
 revisions and evidence withdrawal APIs preserve semantic lineage and prior hint
 decisions. Evidence-pinned answers support independent review, explicit question
 resolution and automatic review notices when support changes. Project migration, collaboration UI integration and final end-to-end/scale
-acceptance remain open. Large source indexes can also exceed the current 8 MiB
-single-payload Git/HTTP transfer limit; successful local capture does not establish
-shared delivery. Doctor reports pending
+acceptance remain open. Large portable bundles use content-addressed chunks in Git
+and authenticated staged HTTP transfers; each piece is at most 4 MiB, with a
+256 MiB aggregate limit. Private live state verifies cached documents on restart.
+The default 20,000-token and extended 50,000-observation/10,000-task fixtures
+have passed Git and two live clients with exact record/history checks. Doctor reports pending
 synchronization explicitly. A successful connection is not evidence that research
 has synchronized, and workflow completion never establishes forensic correctness.
 

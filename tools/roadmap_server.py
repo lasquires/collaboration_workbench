@@ -397,6 +397,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, status, value):
         data = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        if status==200 and self.headers.get('X-Workspace-Chunked')=='v1' and not self.path.startswith('/v1/transfer-download') and len(data)>4*1024*1024:
+            import workspace_transfer
+            project=getattr(self,'_response_project',None)
+            if not project:raise RoadmapError(413,'Large responses require a project scope')
+            principal=self._principal() if self._shared() else None
+            if principal is not None:self._scope(principal,project)
+            value=workspace_transfer.cache_response(_store(),project,principal['principal_id'] if principal else 'trusted-local',value)
+            data=json.dumps(value,ensure_ascii=False).encode('utf-8')
         self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(data)))
         self.end_headers(); self.wfile.write(data)
@@ -437,6 +445,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise RoadmapError(403, 'Repository files require owner credential')
                 self._serve_repo_file()
             elif parsed.path.startswith("/v1/"):
+                self._response_project=urllib.parse.parse_qs(parsed.query).get('project_id',[None])[0]
                 self._json(200, self._shared_read(parsed, self._principal()) if self._shared() else workspace_read(parsed))
             elif parsed.path == "/api/tasks" and not parsed.query:
                 self._json(200, snapshot())
@@ -497,8 +506,24 @@ class Handler(BaseHTTPRequestHandler):
                 raise RoadmapError(403, 'Legacy API is unavailable in shared mode')
             principal = self._principal() if self._shared() and parsed.path.startswith('/v1/') else None
             payload = self._body()
+            self._response_project=payload.get('project_id') if isinstance(payload,dict) else None
             if principal is not None:
                 self._shared_write(parsed, payload, principal)
+            if parsed.path.startswith('/v1/transfer-') and not parsed.query:
+                import workspace_transfer
+                if parsed.path not in ('/v1/transfer-download','/v1/transfer-release') and principal is not None and not principal['is_owner'] and 'contribute' not in principal['capabilities']:
+                    raise RoadmapError(403,'Staging requires contribute capability')
+                action=parsed.path.removeprefix('/v1/transfer-')
+                result=workspace_transfer.stage(_store(),action,payload,principal['principal_id'] if principal else 'trusted-local')
+                if action!='finish':
+                    self._json(200,result);return
+                target,payload=result
+                parsed=urlparse(target)
+                self._response_project=payload['project_id']
+                if principal is not None:
+                    # Reauthenticate after verification, then use the original dispatch/auth gates.
+                    principal=self._principal()
+                    self._shared_write(parsed,payload,principal)
             if parsed.path.startswith('/v1/live-') and not parsed.query:
                 action=parsed.path.removeprefix('/v1/live-')
                 extra={'configure':{'enabled'},'join-preview':set(),'join':{'review','choices'},'sync':set(),'review':{'side'},'resolve':{'side','review','choices'},'claims-read':{'task_id'},'claims-preview':{'operation'},'claims-submit':{'review_id'}}
@@ -630,7 +655,7 @@ def checkpoint_before_upgrade(path):
         version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return None
-    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
+    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
         raise RoadmapError(503, 'Unsupported task database schema; no migration attempted')
     from migrate_roadmap import backup_database
     def file_hash(target):

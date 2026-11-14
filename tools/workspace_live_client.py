@@ -16,11 +16,13 @@ try:
     from .roadmap_cli import request,ApiError
     from .roadmap_store import StoreError
     from .workspace_sync import WorkspaceGitSync
+    from .workspace_json_cache import PrivateJsonCache
 except ImportError:
     import roadmap_exchange as exchange
     from roadmap_cli import request,ApiError
     from roadmap_store import StoreError
     from workspace_sync import WorkspaceGitSync
+    from workspace_json_cache import PrivateJsonCache
 
 _LOCKS={}
 _GUARD=threading.Lock()
@@ -55,6 +57,7 @@ class WorkspaceLiveClient:
         self.directory.mkdir(parents=True,exist_ok=True);self.path=self.directory/'live-state.json'
         self.binding=hashlib.sha256((self.url+'\0'+project_id+'\0'+actor_id).encode()).hexdigest()
         with _GUARD:self.lock=_LOCKS.setdefault(str(self.path),threading.RLock())
+        self.documents=PrivateJsonCache(self.directory/'documents',self.binding)
         self._load()
 
     def _load(self):
@@ -62,18 +65,21 @@ class WorkspaceLiveClient:
         try:
             if self.path.stat().st_size>32*1024*1024:raise ValueError()
             state=json.loads(self.path.read_text(encoding='utf-8'))
+            if state.get('format')=='workbench-private-json-state':state=self.documents.thaw(state)
             if state['binding']!=self.binding or state['version']!=1:raise ValueError()
             return state
         except (ValueError,KeyError,OSError):raise ValueError('Private live-client state is incompatible') from None
 
     def _save(self,state):
-        raw=json.dumps(state,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode('utf-8')
+        frozen=self.documents.freeze(state)
+        raw=json.dumps(frozen,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode('utf-8')
         if len(raw)>32*1024*1024:raise ValueError('Live reconciliation state exceeds its bound')
         name=None
         try:
             with tempfile.NamedTemporaryFile(dir=self.directory,delete=False) as output:
                 name=output.name;output.write(raw);output.flush();os.fsync(output.fileno())
             os.replace(name,self.path)
+            self.documents.prune(frozen)
         finally:
             if name and os.path.exists(name):os.unlink(name)
 
@@ -82,7 +88,10 @@ class WorkspaceLiveClient:
         return {'state':state['state'],'claim_scope':'local-only','pending':job is not None or state['state']=='pending','base_id':state['base']['id'] if state['base'] else None,
                 'operation_id':job['id'] if job else None,'phase':job['phase'] if job else None,'error':state['error']}
 
-    def _call(self,path,payload=None):return self.requester(self.url,path,payload,token_file=self.token_file)
+    def _call(self,path,payload=None):
+        if self.requester is request:
+            return self.requester(self.url,path,payload,token_file=self.token_file,chunked=True,timeout=60)
+        return self.requester(self.url,path,payload,token_file=self.token_file)
 
     def _remote(self,ancestor=None):
         query={'project_id':self.project_id,'portable':'true'}
