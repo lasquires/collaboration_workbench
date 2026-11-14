@@ -7,6 +7,7 @@ transactions. Membership, capabilities, sessions and delivery queues stay local.
 import base64
 import hashlib
 import json
+import re
 
 try:
     from . import roadmap_research as research
@@ -18,6 +19,24 @@ RESOURCES = {'exchange'}
 TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals'.split())
 IMMUTABLE = set('principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches'.split())
 canonical = research.canonical
+_PORTABLE_FORMAT = 'workbench-exchange'
+_PORTABLE_HISTORY = {'id','project_id','request_id','actor_id','entity_type','entity_id','kind','recorded_at','payload_sha256'}
+_HOST_PATH = re.compile(r"(?i)(?:[a-z]:[\\/]|\\\\|(?:^|[\s(=])/(?!/))")
+
+
+def _portable_path_check(value, known_roots):
+    if isinstance(value, dict):
+        for item in value.values(): _portable_path_check(item, known_roots)
+    elif isinstance(value, list):
+        for item in value: _portable_path_check(item, known_roots)
+    elif isinstance(value, str):
+        if any(root and (root in value or root.replace('\\','/') in value) for root in known_roots) or _HOST_PATH.search(value):
+            research.error(409, 'Portable exchange contains a host path; review source text before sharing')
+        if value.startswith(('{','[')):
+            try: nested=json.loads(value)
+            except ValueError: return
+            _portable_path_check(nested, known_roots)
+
 
 
 def create_schema(db):
@@ -50,7 +69,7 @@ def _encode(row):
     return row
 
 
-def export_bundle(db, project_id, ancestor_id=None):
+def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
     if db.execute('SELECT 1 FROM projects WHERE id=?',(project_id,)).fetchone() is None:
         research.error(404, 'Unknown exchange project')
     schema = _schema(db)
@@ -65,10 +84,18 @@ def export_bundle(db, project_id, ancestor_id=None):
         else:
             query, args = f'SELECT * FROM {table} WHERE project_id=?', (project_id,)
         values = [_encode(r) for r in db.execute(query,args)]
+        if portable and table == 'artifact_roots':
+            for row in values: row['path'] = 'workspace-root:' + row['id']
+        if portable and table == 'artifact_blobs': values = []
         rows[table] = sorted(values,key=lambda r:_key(schema,table,r))
     history = [dict(r) for r in db.execute('SELECT * FROM workspace_events WHERE project_id=? ORDER BY id',(project_id,))]
     for event in history:
         event.pop('sequence',None)
+    if portable:
+        history = [event for event in history if event['kind'] not in {'bind_root','hydrate_artifact_version','repository_snapshot','register_repository'}]
+        history = [{**{key:event[key] for key in _PORTABLE_HISTORY - {'payload_sha256'}},
+                    'payload_sha256':research.digest({key:event.get(key) for key in ('before_json','after_json','rationale')})}
+                   for event in history]
     contributors={r.get('created_by') for records in rows.values() for r in records}
     contributors.update(r.get('reviewer_id') for records in rows.values() for r in records)
     contributors.update(e.get('actor_id') for e in history)
@@ -78,7 +105,10 @@ def export_bundle(db, project_id, ancestor_id=None):
         found=db.execute('SELECT * FROM principals WHERE id=?',(identity,)).fetchone()
         if found is not None: principals[identity]=_encode(found)
     rows['principals']=sorted(principals.values(),key=lambda r:_key(schema,'principals',r))
-    bundle = {'format':'ssg2-exchange','version':1,'project_id':project_id,'schema':schema,'ancestor_id':ancestor_id,'records':rows,'history':history}
+    bundle = {'format':_PORTABLE_FORMAT if portable else 'ssg2-exchange','version':2 if portable else 1,'project_id':project_id,'schema':schema,'ancestor_id':ancestor_id,'records':rows,'history':history}
+    if portable:
+        roots=[row[0] for row in db.execute('SELECT path FROM artifact_roots WHERE project_id=?',(project_id,)) if not row[0].startswith('workspace-root:')]
+        _portable_path_check({'records':rows,'history':history}, roots)
     bundle['id'] = research.digest(bundle)
     return bundle
 
@@ -86,18 +116,44 @@ def export_bundle(db, project_id, ancestor_id=None):
 def _validate(db, project, bundle):
     if not isinstance(bundle,dict) or set(bundle) != {'format','version','project_id','schema','ancestor_id','records','history','id'}:
         research.error(400,'Invalid exchange envelope')
+    if (type(bundle['version']) is not int or not isinstance(bundle['format'],str)
+            or not isinstance(bundle['id'],str) or not re.fullmatch('[0-9a-f]{64}',bundle['id'])
+            or not isinstance(bundle['records'],dict) or not isinstance(bundle['schema'],dict)
+            or not isinstance(bundle['history'],list) or any(not isinstance(event,dict) for event in bundle['history'])
+            or any(not isinstance(rows,list) or any(not isinstance(row,dict) for row in rows) for rows in bundle['records'].values())):
+        research.error(400,'Malformed exchange collections or version')
     content = {k:v for k,v in bundle.items() if k!='id'}
     if bundle['id'] != research.digest(content):
         research.error(400,'Exchange content hash mismatch')
-    if bundle['format']!='ssg2-exchange' or bundle['version']!=1 or bundle['project_id']!=project or bundle['schema']!=_schema(db):
+    portable=(bundle['format'],bundle['version'])==(_PORTABLE_FORMAT,2)
+    if ((not portable and (bundle['format'],bundle['version'])!=('ssg2-exchange',1))
+            or bundle['project_id']!=project or bundle['schema']!=_schema(db)):
         research.error(409,'Exchange project or schema mismatch')
     if set(bundle['records'])!=set(TABLES):
         research.error(400,'Exchange table whitelist mismatch')
+    if portable:
+        if bundle['records']['artifact_blobs'] or not isinstance(bundle['history'],list) or any(not isinstance(e,dict) or set(e)!=_PORTABLE_HISTORY or not isinstance(e['payload_sha256'],str) or not re.fullmatch('[0-9a-f]{64}',e['payload_sha256']) for e in bundle['history']):
+            research.error(400,'Portable exchange contains raw bytes or history')
+        if any(not isinstance(r,dict) or not isinstance(r.get('id'),str) or r.get('path')!='workspace-root:'+r['id'] for r in bundle['records']['artifact_roots']):
+            research.error(400,'Portable roots must use logical identities')
+        _portable_path_check({'records':bundle['records'],'history':bundle['history']}, ())
     for table, rows in bundle['records'].items():
         seen=set()
         for row in rows:
             if set(row)!={c['name'] for c in bundle['schema'][table]} or ('project_id' in row and row['project_id']!=project) or (table=='projects' and row['id']!=project):
                 research.error(400,'Foreign project or unknown columns in exchange')
+            for column in bundle['schema'][table]:
+                value=row[column['name']]
+                if value is None:
+                    if column['notnull'] or column['pk']:research.error(400,'Missing required exchange value')
+                elif column['type'].upper()=='TEXT' and not isinstance(value,str):
+                    research.error(400,'Invalid exchange text value')
+                elif column['type'].upper()=='INTEGER' and type(value) is not int:
+                    research.error(400,'Invalid exchange integer value')
+            if table=='tasks':
+                try:
+                    if not isinstance(json.loads(row['record_json']),dict):raise ValueError()
+                except (ValueError,TypeError):research.error(400,'Task exchange record must be an object')
             key=_key(bundle['schema'],table,row)
             if key in seen: research.error(400,'Duplicate exchange identity')
             seen.add(key)
@@ -148,12 +204,15 @@ def _fields(row):
 
 def preview_import(db, project_id, bundle):
     _validate(db,project_id,bundle)
-    local=export_bundle(db,project_id)
+    portable=bundle['format']==_PORTABLE_FORMAT
+    local=export_bundle(db,project_id,portable=portable)
     ancestor=None
     if bundle['ancestor_id']:
         saved=db.execute('SELECT bundle_json FROM exchange_snapshots WHERE project_id=? AND id=?',(project_id,bundle['ancestor_id'])).fetchone()
         if not saved: research.error(409,'Unknown shared ancestor; register the common snapshot first')
         ancestor=json.loads(saved[0])
+        if (ancestor['format'],ancestor['version']) != (bundle['format'],bundle['version']):
+            research.error(409,'Shared ancestor uses another exchange format')
     changes=[]
     for table in TABLES:
         ours=_index(local,table); base=_index(ancestor,table) if ancestor else {}
@@ -171,12 +230,84 @@ def preview_import(db, project_id, bundle):
                               'take_remote':original is None or value!=old}
             status='addition' if current is None else ('identical' if not fields else ('conflict' if any(f['conflict'] for f in fields.values()) else 'merge'))
             changes.append({'table':table,'key':key,'status':status,'fields':fields})
-    available={r['sha256'] for r in local['records']['artifact_blobs']+bundle['records']['artifact_blobs']}
+    available={r[0] for r in db.execute('SELECT sha256 FROM artifact_blobs WHERE project_id=?',(project_id,))}
+    available.update(r['sha256'] for r in bundle['records']['artifact_blobs'])
     missing=sorted({r['sha256'] for r in bundle['records']['artifact_versions'] if r['sha256'] not in available})
     return {'id':bundle['id'],'ancestor_id':bundle['ancestor_id'],'changes':changes,'missing_sources':missing}
 
 
-def apply_operation(db, project, principal, op, request_id):
+def _acyclic(nodes, edges, label):
+    outgoing = {node: [] for node in nodes}
+    incoming = dict.fromkeys(nodes, 0)
+    for source, target in edges:
+        if source not in nodes or target not in nodes or source == target:
+            research.error(409, 'Invalid merged ' + label + ' reference')
+        outgoing[source].append(target)
+        incoming[target] += 1
+    pending = [node for node, count in incoming.items() if not count]
+    visited = 0
+    while pending:
+        node = pending.pop(); visited += 1
+        for target in outgoing[node]:
+            incoming[target] -= 1
+            if not incoming[target]: pending.append(target)
+    if visited != len(nodes): research.error(409, 'Merged ' + label + ' cycle requires review')
+
+
+def _review_merged_import(db, project, previous, previous_scope):
+    """Imported reviews are history, never a local grant of acceptance."""
+    current = {row['uid']: dict(row) for row in db.execute('SELECT * FROM tasks WHERE project_id=?', (project,))}
+    for uid, row in current.items():
+        old = previous.get(uid)
+        if old is not None and old == row: continue
+        record = json.loads(row['record_json'])
+        if row['acceptance_state'] == 'passed' or record.get('status') == 'done' or record.get('acceptance_gate_passed'):
+            record['status'] = 'review'
+            record['acceptance_gate_passed'] = False
+            db.execute("UPDATE tasks SET record_json=?,acceptance_state='invalidated',gate_revision=gate_revision+1 WHERE uid=? AND project_id=?",
+                       (canonical(record), uid, project))
+    tasks = {row['uid']: dict(row) for row in db.execute('SELECT * FROM tasks WHERE project_id=?', (project,))}
+    current_scope = {table: {tuple(row) for row in db.execute(query, (project,))}
+                     for table, query in (
+                         ('containment', 'SELECT child_id,parent_id,required_for_parent FROM containment WHERE project_id=?'),
+                         ('dependencies', "SELECT l.source_id,l.target_id,l.kind FROM task_links l JOIN tasks t ON t.id=l.source_id WHERE t.project_id=? AND l.kind='depends_on'"))}
+    if current_scope != previous_scope:
+        changed_parents = {item[1] for item in current_scope['containment'] ^ previous_scope['containment'] if item[1]}
+        changed_sources = {item[0] for item in current_scope['dependencies'] ^ previous_scope['dependencies']}
+        legacy = {row['id']: row for row in tasks.values()}
+        for row in [tasks[uid] for uid in changed_parents if uid in tasks] + [legacy[key] for key in changed_sources if key in legacy]:
+            if row['acceptance_state'] == 'passed' or json.loads(row['record_json']).get('status') == 'done':
+                research.error(409, 'Reopen or revalidate accepted scope before importing relationship changes')
+    by_legacy = {row['id']: row['uid'] for row in tasks.values()}
+    _acyclic(set(by_legacy), [(row['id'], row['parent_id']) for row in tasks.values() if row['parent_id']], 'task parent')
+    areas = {row['id']: dict(row) for row in db.execute('SELECT * FROM areas WHERE project_id=?', (project,))}
+    _acyclic(set(areas), [(row['id'], row['parent_id']) for row in areas.values() if row['parent_id']], 'area parent')
+    containment = list(db.execute('SELECT child_id,parent_id,required_for_parent FROM containment WHERE project_id=?', (project,)))
+    _acyclic(set(tasks), [(row['child_id'], row['parent_id']) for row in containment if row['parent_id']], 'containment')
+    for edge in containment:
+        child = tasks.get(edge['child_id'])
+        if child is None or (by_legacy.get(child['parent_id']) if child['parent_id'] else None) != edge['parent_id']:
+            research.error(409, 'Merged containment disagrees with task parent')
+    for row in tasks.values():
+        record = json.loads(row['record_json'])
+        if row['acceptance_state'] == 'passed':
+            validation = db.execute('SELECT * FROM validation_records WHERE project_id=? AND id=?', (project, row['validation_id'])).fetchone()
+            reviewer = validation and db.execute('SELECT capabilities_json FROM project_members WHERE project_id=? AND principal_id=?', (project, validation['reviewer_id'])).fetchone()
+            if not validation or not reviewer or 'review' not in json.loads(reviewer[0]) or validation['task_id'] != row['uid'] or validation['outcome'] != 'passed' or validation['gate_revision'] != row['gate_revision'] or row['created_by'] == validation['reviewer_id']:
+                research.error(409, 'Merged acceptance lacks trusted local independent review')
+        if record.get('status') == 'done':
+            if row['acceptance_state'] != 'passed': research.error(409, 'Completed task lacks current local gate')
+            children = [edge for edge in containment if edge['parent_id'] == row['uid']]
+            if children and not row['decomposition_complete']: research.error(409, 'Completed parent has undeclared scope')
+            for edge in children:
+                child = tasks[edge['child_id']]
+                if edge['required_for_parent'] and (child['archive_reason'] is not None or json.loads(child['record_json']).get('status') != 'done' or child['acceptance_state'] != 'passed'):
+                    research.error(409, 'Completed parent has unaccepted required child')
+    links = [(row['source_id'], row['target_id']) for row in db.execute("SELECT l.source_id,l.target_id FROM task_links l JOIN tasks t ON t.id=l.source_id WHERE t.project_id=? AND l.kind='depends_on'", (project,))]
+    _acyclic(set(by_legacy), links, 'dependency')
+
+
+def apply_operation(db, project, principal, op, request_id, *, review_import=False):
     if not db.in_transaction: research.error(409,'Exchange requires caller-owned transaction')
     membership=db.execute('SELECT capabilities_json FROM project_members WHERE project_id=? AND principal_id=?',(project,principal)).fetchone()
     if not membership or not set(json.loads(membership[0])) & {'contribute','admin'}: research.error(403,'Contributor capability required')
@@ -189,7 +320,13 @@ def apply_operation(db, project, principal, op, request_id):
     prior=db.execute('SELECT result_json FROM exchange_imports WHERE project_id=? AND id=?',(project,bundle['id'])).fetchone()
     if prior: return json.loads(prior[0])
     preview=preview_import(db,project,bundle)
+    previous = {row['uid']: dict(row) for row in db.execute('SELECT * FROM tasks WHERE project_id=?', (project,))} if review_import else None
+    previous_scope = {table: {tuple(row) for row in db.execute(query, (project,))}
+                      for table, query in (
+                          ('containment', 'SELECT child_id,parent_id,required_for_parent FROM containment WHERE project_id=?'),
+                          ('dependencies', "SELECT l.source_id,l.target_id,l.kind FROM task_links l JOIN tasks t ON t.id=l.source_id WHERE t.project_id=? AND l.kind='depends_on'"))} if review_import else None
     choices=op.get('choices',{})
+    if not isinstance(choices, dict): research.error(400, 'Exchange choices must be an object')
     for change in preview['changes']:
         for field, alternatives in change['fields'].items():
             token=canonical([change['table'],change['key'],field])
@@ -225,6 +362,17 @@ def apply_operation(db, project, principal, op, request_id):
                 for field in ('claim','reserved_paths','session_id','lease'):
                     if field in local_record: record[field]=local_record[field]
                 row['record_json']=canonical(record)
+            if table=='artifact_roots' and bundle['format']==_PORTABLE_FORMAT and change['status']!='addition':
+                row['path']=db.execute('SELECT path FROM artifact_roots WHERE project_id=? AND id=?',(project,row['id'])).fetchone()[0]
+            if table=='principals' and change['status']=='addition':
+                # Principal IDs are global. A principal outside this project's
+                # portable scope may already exist locally; reuse only identical
+                # immutable identity, without creating project membership.
+                existing=db.execute('SELECT * FROM principals WHERE id=?',(row['id'],)).fetchone()
+                if existing is not None:
+                    if dict(existing)!=row:
+                        research.error(409,'Global principal identity conflicts with local history')
+                    continue
             if table=='artifact_blobs': row['body']=base64.b64decode(row['body']['base64'])
             columns=list(row); pk=[c['name'] for c in bundle['schema'][table] if c['pk']]
             if change['status']=='addition':
@@ -233,6 +381,7 @@ def apply_operation(db, project, principal, op, request_id):
                 fields=[c for c in columns if c not in pk]
                 db.execute(f"UPDATE {table} SET {','.join(c+'=?' for c in fields)} WHERE {' AND '.join(c+'=?' for c in pk)}",tuple(row[c] for c in fields+pk))
         if db.execute('PRAGMA foreign_key_check').fetchone(): research.error(409,'Exchange contains missing or foreign references')
+        if review_import: _review_merged_import(db, project, previous, previous_scope)
         # A field merge can alter a validation's gate or reference. Recheck the
         # resulting accepted state, rather than trusting either side in isolation.
         invalid=db.execute("SELECT 1 FROM tasks t LEFT JOIN validation_records v ON v.project_id=t.project_id AND v.id=t.validation_id WHERE t.project_id=? AND t.acceptance_state='passed' AND (v.id IS NULL OR v.task_id<>t.uid OR v.outcome<>'passed' OR v.gate_revision<>t.gate_revision)",(project,)).fetchone()

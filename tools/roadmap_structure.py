@@ -69,7 +69,11 @@ def create_schema(db):
 
 def bootstrap_local_capabilities(db):
     for project in db.execute('SELECT id FROM projects').fetchall():
-        local=str(uuid.uuid5(uuid.UUID(project['id']),'trusted-local:local'))
+        try:
+            from .roadmap_schema import principal_for_label
+        except ImportError:
+            from roadmap_schema import principal_for_label
+        local=principal_for_label(db,project['id'],'local')
         existing=db.execute('SELECT capabilities_json FROM project_members WHERE project_id=? AND principal_id=?',(project['id'],local)).fetchone()
         if existing is None: continue
         capabilities=set(json.loads(existing[0]))|{'contribute','review','manage_claims','manage_projects'}

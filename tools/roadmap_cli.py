@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import json
 import sys
 import urllib.error
@@ -9,7 +11,7 @@ import urllib.request
 import uuid
 import hashlib
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode,urlsplit
 
 
 class ApiError(Exception):
@@ -19,12 +21,35 @@ class ApiError(Exception):
         super().__init__(message)
 
 
-def request(base_url, path, payload=None):
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def request(base_url, path, payload=None, *, token_file=None):
+    parsed=urlsplit(base_url)
+    if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ApiError(0,'Service URL must be HTTP(S) without embedded credentials, query or fragment')
+    if not path.startswith('/') or path.startswith('//'):
+        raise ApiError(0,'Expected an absolute API path')
+    headers={}
+    token_file=token_file or os.environ.get('RESEARCH_WORKSPACE_TOKEN_FILE')
+    if token_file:
+        if parsed.scheme!='https' and parsed.hostname not in ('127.0.0.1','localhost','::1'):
+            raise ApiError(0,'Authenticated remote requests require HTTPS')
+        try:
+            with Path(token_file).open('r',encoding='utf-8') as credential:
+                token=credential.read(258).strip()
+        except (OSError,UnicodeError):
+            raise ApiError(0,'Cannot read credential file') from None
+        if not re.fullmatch(r'[A-Za-z0-9_-]{32,256}',token):
+            raise ApiError(0,'Malformed credential file')
+        headers['Authorization']='Bearer '+token
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(base_url.rstrip("/") + path, data=data,
-                                 headers={"Content-Type": "application/json"} if data else {})
+                                 headers={**headers,**({"Content-Type": "application/json"} if data else {})})
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.build_opener(_NoRedirect()).open(req, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:
@@ -96,24 +121,26 @@ def format_context(snapshot, task_id):
 
 
 def _write(args, operation):
-    snap = request(args.url, "/api/tasks")
+    snap = request(args.url, "/api/tasks", token_file=args.token_file)
     request_id = args.request_id or str(uuid.uuid4())
     payload = {"expected_revision": snap["revision"], "request_id": request_id,
                "actor": args.actor, "operations": [operation]}
     print(f"Request ID: {request_id}", file=sys.stderr)
-    result = request(args.url, "/api/transaction", payload)
+    result = request(args.url, "/api/transaction", payload, token_file=args.token_file)
     print(f"Updated at revision {result.get('revision', 'unknown')} (request {request_id})")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="http://127.0.0.1:8769", help="loopback roadmap API base URL")
+    parser.add_argument("--url", default="http://127.0.0.1:8769", help="workspace API base URL (HTTPS for remote credentials)")
+    parser.add_argument("--token-file",type=Path,help="private bearer credential file; also RESEARCH_WORKSPACE_TOKEN_FILE")
     sub = parser.add_subparsers(dest="command", required=True)
     read = sub.add_parser("v1-read", help="read a project-scoped workspace resource")
     read.add_argument("resource")
     read.add_argument("--project")
     read.add_argument("--limit", type=int)
     read.add_argument("--cursor")
+    read.add_argument("--repository",help="repository connection UUID for source-update history")
     transaction = sub.add_parser("v1-transaction", help="submit an exact v1 envelope from a UTF-8 JSON file")
     transaction.add_argument("--file", type=Path, required=True)
     exchange_export = sub.add_parser('exchange-export', help='save a read-only Git exchange bundle to a new JSON file')
@@ -157,12 +184,13 @@ def main(argv=None):
     journal.add_argument("--kind", required=True); journal.add_argument("--text", required=True)
     journal.add_argument("--request-id")
     args = parser.parse_args(argv)
+    client=lambda path,payload=None: request(args.url,path,payload,token_file=args.token_file)
     try:
         if args.command == 'exchange-export':
             params = {'project_id': args.project}
             if args.ancestor is not None:
                 params['ancestor_id'] = args.ancestor
-            result = request(args.url, '/v1/exchange-export?' + urlencode(params))
+            result = client( '/v1/exchange-export?' + urlencode(params))
             # Serialize before opening so a bad response cannot leave a partial file.
             body = json.dumps(result['bundle'], ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + '\n'
             with args.output.open('x', encoding='utf-8', newline='\n') as output:
@@ -173,14 +201,14 @@ def main(argv=None):
             bundle = json.loads(args.file.read_text(encoding='utf-8-sig'))
             if not isinstance(bundle, dict):
                 raise ValueError('Exchange file must contain a bundle object')
-            result = request(args.url, '/v1/exchange-preview', {'project_id': args.project, 'bundle': bundle})
+            result = client( '/v1/exchange-preview', {'project_id': args.project, 'bundle': bundle})
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "process-jobs":
-            caps = request(args.url, '/v1/projects/'+args.project+'/capabilities')
+            caps = client( '/v1/projects/'+args.project+'/capabilities')
             request_id = args.request_id or str(uuid.uuid4())
             print(f'Request ID: {request_id}',file=sys.stderr)
-            result = request(args.url,'/v1/transactions',{'project_id':args.project,
+            result = client('/v1/transactions',{'project_id':args.project,
                 'actor':{'principal_id':caps['capabilities']['local_principal_id']},
                 'request_id':request_id,'expected_revision':caps['revision'],
                 'operations':[{'op':'process_jobs','limit':args.limit}]})
@@ -189,7 +217,7 @@ def main(argv=None):
         if args.command == "import-variables":
             document = json.loads(args.file.read_text(encoding="utf-8-sig"))
             source_hash = hashlib.sha256(json.dumps(document,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode('utf-8')).hexdigest()
-            preview = request(args.url, "/v1/variable-import-preview", {"project_id":args.project,"document":document,"source_hash":source_hash})
+            preview = client( "/v1/variable-import-preview", {"project_id":args.project,"document":document,"source_hash":source_hash})
             if args.dry_run:
                 print(json.dumps(preview,ensure_ascii=False,indent=2))
                 return 0
@@ -197,7 +225,7 @@ def main(argv=None):
                 raise ValueError("Apply requires --principal and --expected-source-sha256 from the dry run")
             request_id = args.request_id or str(uuid.uuid4())
             print(f"Request ID: {request_id}",file=sys.stderr)
-            result = request(args.url, "/v1/transactions", {"project_id":args.project,
+            result = client( "/v1/transactions", {"project_id":args.project,
                 "actor":{"principal_id":args.principal},"request_id":request_id,"expected_revision":preview['revision'],
                 "operations":[{"op":"import_variable_registry","document":document,"source_hash":source_hash}]})
             print(json.dumps(result,ensure_ascii=False,indent=2))
@@ -205,22 +233,22 @@ def main(argv=None):
         if args.command == "v1-read":
             if not args.resource or any(c not in 'abcdefghijklmnopqrstuvwxyz-' for c in args.resource):
                 raise ValueError("Expected a workspace resource name")
-            params = {k: v for k, v in {"project_id":args.project,"limit":args.limit,"cursor":args.cursor}.items() if v is not None}
-            result = request(args.url, "/v1/" + args.resource + ('?' + urlencode(params) if params else ''))
+            params = {k: v for k, v in {"project_id":args.project,"limit":args.limit,"cursor":args.cursor,"repository_id":args.repository}.items() if v is not None}
+            result = client( "/v1/" + args.resource + ('?' + urlencode(params) if params else ''))
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "v1-transaction":
             payload = json.loads(args.file.read_text(encoding="utf-8-sig"))
             if not isinstance(payload, dict):
                 raise ValueError("Transaction file must contain a v1 envelope object")
-            result = request(args.url, "/v1/transactions", payload)
+            result = client( "/v1/transactions", payload)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "context":
-            print(format_context(request(args.url, "/api/tasks"), args.task_id))
+            print(format_context(client( "/api/tasks"), args.task_id))
             return 0
         if args.command == "list":
-            print(format_task_list(request(args.url, "/api/tasks"), args.status))
+            print(format_task_list(client( "/api/tasks"), args.status))
             return 0
         if args.command == "create":
             record = json.loads(args.record)

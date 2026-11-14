@@ -35,6 +35,9 @@ def apply_operation(db,project,principal,op,request_id):
             db.execute('INSERT INTO projects(id,slug,goal,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)',(identity,slug,research.text(op.get('goal','Research project'),'project goal'),principal,now,now))
             local=roadmap_schema.principal_for_label(db,identity,'local')
             db.execute('UPDATE project_members SET capabilities_json=? WHERE project_id=? AND principal_id=?',(research.canonical(['contribute','review','manage_claims','manage_projects']),identity,local))
+            # Keep the authenticated creator able to administer the new project.
+            db.execute('INSERT INTO project_members VALUES(?,?,?) ON CONFLICT(project_id,principal_id) DO NOTHING',
+                       (identity,principal,research.canonical(['contribute','review','manage_claims','manage_projects'])))
             result={'type':'project','id':identity,'record_revision':1}
         if op.get('repository_root') is not None:
             local=roadmap_schema.principal_for_label(db,identity,'local')

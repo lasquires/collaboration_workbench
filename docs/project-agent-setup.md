@@ -35,7 +35,8 @@ The first command shows the files that setup proposes without contacting the
 service or writing project files. The second registers a project and its local
 repository connection through the service, then writes:
 
-- `.research-workspace/project.json`: portable project identity and name;
+- `.research-workspace/project.json`: portable project identity, name and project-specific remote binding;
+- `.research-workspace/schema.json`: versioned storage/portable-record contract;
 - `.research-workspace/AGENTS.md`: the project-agent integration contract.
 
 Repeated setup reuses the project identity. A clone must retain its existing
@@ -44,7 +45,7 @@ app's database and are not written into the portable manifest. Existing integrat
 instructions are not overwritten if they differ from the generated guide.
 
 Add a reference to `.research-workspace/AGENTS.md` in your project's existing
-agent instructions, preserving unrelated content. Review and commit those two
+agent instructions, preserving unrelated content. Review and commit those three
 integration files using your normal Git workflow. The app does not commit or push
 them automatically.
 

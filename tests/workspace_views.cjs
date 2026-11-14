@@ -81,6 +81,12 @@ assert.ok(differences.some(x => x.key === 'binary_build_id' && !x.same));
   await assert.rejects(model.postTransaction(uncertainFetch, payload), /connection lost/);
   await model.postTransaction(uncertainFetch, payload);
   assert.deepEqual(retries[0], retries[1], 'uncertain retries reuse the identical request ID and body');
+  const access=require('../docs/workspace-access.js').createAccess({location:{href:'https://workbench.example/',origin:'https://workbench.example'},storage:{getItem:()=> 'x'.repeat(64)}});
+  await model.postTransaction(fakeFetch,payload,access.options);
+  assert.equal(calls.at(-1).options.headers.get('Authorization'),'Bearer '+'x'.repeat(64),'initial and retry writes use session authentication');
+  assert.equal(calls.at(-1).options.redirect,'error');
+  assert.match(html,/postTransaction\(fetch,payload,root\.WorkspaceAccess\.options\)/);
+  assert.match(html,/postTransaction\(fetch,pendingRetry,root\.WorkspaceAccess\.options\)/);
   assert.match(html, /textContent=esc\(/, 'untrusted API strings are assigned as text, not HTML');
   for (const endpoint of ['/v1/projects', '/v1/observations', '/v1/findings', '/v1/questions', '/v1/hints', '/v1/inbox', '/v1/documents', '/v1/discussions', '/v1/proposals', '/v1/feedback'])
     assert.ok(html.includes(endpoint) || html.includes(`'${endpoint.slice(4)}'`), `panel/API resource is wired: ${endpoint}`);

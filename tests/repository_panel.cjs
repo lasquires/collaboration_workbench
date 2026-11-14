@@ -13,4 +13,8 @@ const html=fs.readFileSync('docs/roadmap-dashboard.html','utf8');
 assert.match(html,/id="repositoryForm"/);
 assert.match(html,/src="\/assets\/workspace-repositories.js"/);
 assert.doesNotThrow(()=>new vm.Script(fs.readFileSync('docs/workspace-repositories.js','utf8')));
+const preview={changes:[{table:'areas',key:'["area"]',fields:{title:{conflict:true},revision:{conflict:false}}}]};
+const token=JSON.stringify(['areas','["area"]','title']);
+assert.throws(()=>panel.conflictChoices(preview,{}),/every/);
+assert.deepEqual(panel.conflictChoices(preview,{[token]:'local'}),{[token]:'local'});
 console.log('repository connection panel checks passed');

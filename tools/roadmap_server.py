@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import ssl
 import uuid
 import threading
 import urllib.parse
@@ -18,6 +19,10 @@ from urllib.parse import urlparse
 
 from roadmap_store import RoadmapStore, StoreError
 from roadmap_schema import SCHEMA_VERSION
+import workspace_auth
+from workspace_sync_service import WorkspaceSyncService
+from workspace_sync import SyncConflict,PrivacyBlocked
+from workspace_git_transport import TransportError
 
 ROOT = Path(__file__).resolve().parents[1]
 BOARD = ROOT / "docs" / "BOARD.md"  # historical source; never read for task state
@@ -158,7 +163,7 @@ def transact(payload: object) -> dict:
 def workspace_read(parsed):
     """Strict versioned read adapter; project selection is never implicit."""
     params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
-    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id", "merge_id"}
+    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id", "merge_id", "repository_id"}
     if set(params) - allowed or any(len(values) != 1 for values in params.values()):
         raise RoadmapError(400, "Unknown or duplicate workspace parameter")
     values = {key: item[0] for key, item in params.items()}
@@ -187,6 +192,9 @@ def workspace_read(parsed):
         if set(options)!={'survivor_id','absorbed_id'}:
             raise RoadmapError(400,'Merge preview requires survivor_id and absorbed_id')
         return _store().merge_preview(project_id,options['survivor_id'],options['absorbed_id'])
+    if path==['v1','git-sync-status']:
+        if set(options)!={'repository_id'}:raise RoadmapError(400,'Git status requires repository_id')
+        return WorkspaceSyncService(_store()).read(project_id,options['repository_id'])
     if path == ['v1','exchange-export']:
         if set(options)-{'ancestor_id'}:
             raise RoadmapError(400,'Unsupported exchange export parameter')
@@ -195,7 +203,7 @@ def workspace_read(parsed):
         if set(options)-{'task_id','limit','cursor','order','state'}:
             raise RoadmapError(400,'Unsupported collaboration read parameter')
         return _store().read_v1(path[1],project_id,**options)
-    if len(path) == 2 and path[1] in {"tasks", "events", "artifacts", "artifact-versions", "index-runs", "occurrences", "observations", "questions", "negative-searches", "findings", "hints", "subscriptions", "inbox", "processing-status", "replay-jobs", "documents", "document-versions", "discussions", "proposals", "feedback", "repositories"}:
+    if len(path) == 2 and path[1] in {"tasks", "events", "artifacts", "artifact-versions", "index-runs", "occurrences", "observations", "questions", "negative-searches", "findings", "hints", "subscriptions", "inbox", "processing-status", "replay-jobs", "documents", "document-versions", "discussions", "proposals", "feedback", "repositories", "repository-updates"}:
         resource = path[1]
     elif len(path) == 4 and path[1] == "tasks" and path[3] in {"context", "neighborhood", "history"}:
         resource = path[3]
@@ -207,6 +215,8 @@ def workspace_read(parsed):
                  "neighborhood": {"limit", "depth", "cursor", "key"}}.get(resource, {"limit", "cursor"}) | {"key"}
     if resource in {"hints", "subscriptions", "inbox", "processing-status", "replay-jobs"}:
         permitted.add("principal_id")
+    if resource=="repository-updates":
+        permitted.add("repository_id")
     if resource in {"documents", "document-versions", "discussions", "proposals", "feedback"}:
         permitted.add("document_id")
     if set(options) - permitted:
@@ -259,6 +269,106 @@ def service_lock(path: Path):
 class Handler(BaseHTTPRequestHandler):
     server_version = "SSG2Roadmap/2"
 
+    def _shared(self):
+        return getattr(self.server, 'shared_mode', False) is True
+
+    def _principal(self):
+        """Authenticate each shared request against current credential state."""
+        header = self.headers.get('Authorization', '')
+        if not header.startswith('Bearer ') or header.count(' ') != 1:
+            raise RoadmapError(401, 'Bearer credential required')
+        with _store()._connection() as db:
+            return workspace_auth.authenticate(db, header[7:])
+
+    @staticmethod
+    def _scope(principal, project_id):
+        if not isinstance(project_id, str) or not project_id:
+            raise RoadmapError(400, 'project_id is required')
+        if not principal['is_owner'] and project_id != principal['project_id']:
+            raise RoadmapError(403, 'Project access denied')
+
+    def _shared_read(self, parsed, principal):
+        if parsed.path == '/v1/projects':
+            result = workspace_read(parsed)
+            if not principal['is_owner']:
+                result['items'] = [item for item in result['items'] if item['id'] == principal['project_id']]
+            return result
+        parts = parsed.path.strip('/').split('/')
+        if len(parts) == 4 and parts[1] == 'projects' and parts[3] == 'capabilities':
+            project_id = urllib.parse.unquote(parts[2])
+        else:
+            params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+            project_id = params.get('project_id', [None])[0]
+            if 'principal_id' in params and (len(params['principal_id']) != 1 or
+                    params['principal_id'][0] != principal['principal_id'] and not principal['is_owner']):
+                raise RoadmapError(403, 'Principal access denied')
+        self._scope(principal, project_id)
+        if parsed.path in ('/v1/inbox','/v1/subscriptions') and 'principal_id' not in params:
+            params['principal_id']=[principal['principal_id']]
+            parsed=parsed._replace(query=urllib.parse.urlencode(params,doseq=True))
+        result = workspace_read(parsed)
+        if len(parts) == 4 and parts[1] == 'projects' and parts[3] == 'capabilities':
+            result['capabilities'].update({'authenticated': True,
+                'local_principal_id': principal['principal_id'],
+                'granted': ['contribute', 'review', 'manage_claims', 'manage_projects']
+                           if principal['is_owner'] else principal['capabilities']})
+        return result
+
+    def _shared_write(self, parsed, payload, principal):
+        if not isinstance(payload, dict):
+            raise RoadmapError(400, 'Workspace mutation requires an object')
+        if parsed.path == '/v1/repository-setup':
+            if not principal['is_owner']:
+                raise RoadmapError(403, 'Host filesystem access requires owner credential')
+            return
+        self._scope(principal, payload.get('project_id'))
+        if parsed.path.startswith('/v1/git-sync-') and not principal['is_owner']:
+            raise RoadmapError(403,'Host Git operations require owner credential')
+        if parsed.path == '/v1/repository-refresh':
+            if not principal['is_owner']:
+                raise RoadmapError(403, 'Host filesystem access requires owner credential')
+            return
+        if parsed.path == '/v1/transactions':
+            actor = payload.get('actor')
+            if not isinstance(actor, dict) or actor.get('principal_id') != principal['principal_id']:
+                raise RoadmapError(403, 'Transaction actor must match credential')
+            operations = payload.get('operations')
+            if not isinstance(operations, list):
+                raise RoadmapError(400, 'Transaction operations are required')
+            owner_ops = {'create_project', 'register_repository', 'register_root',
+                         'register_artifact', 'register_artifact_version', 'bind_root',
+                         'register_document_version'}
+            if any(isinstance(op, dict) and op.get('op') in owner_ops for op in operations) and not principal['is_owner']:
+                raise RoadmapError(403, 'Host filesystem access requires owner credential')
+            required = {'contribute'}
+            if any(isinstance(op, dict) and op.get('op') in {'record_validation', 'complete_task', 'approve_guidance'} for op in operations):
+                required.add('review')
+            if any(isinstance(op, dict) and op.get('op') in {'handoff_claim'} for op in operations):
+                required.add('manage_claims')
+            if any(isinstance(op, dict) and op.get('op') in {'create_project', 'register_repository'} for op in operations):
+                required.add('manage_projects')
+            if not principal['is_owner'] and not required <= set(principal['capabilities']):
+                raise RoadmapError(403, 'Credential lacks required capability')
+        elif parsed.path == '/v1/variable-import-preview' and not principal['is_owner']:
+            raise RoadmapError(403, 'Host filesystem access requires owner credential')
+
+    def _setup_request(self,base_url,path,payload=None):
+        """In-process owner adapter; retain the real credential for every write."""
+        principal=self._principal()
+        if not principal['is_owner']:raise RoadmapError(403,'Host owner credential required')
+        if payload is not None:
+            if path!='/v1/transactions':raise RoadmapError(400,'Unsupported setup operation')
+            return _store().transact_v1(payload,bearer_token=self.headers['Authorization'][7:])
+        parsed=urlparse(path)
+        result=workspace_read(parsed)
+        if parsed.path=='/v1/projects':
+            with _store()._connection() as db:
+                administered={row['project_id'] for row in db.execute('SELECT project_id,capabilities_json FROM project_members WHERE principal_id=?',(principal['principal_id'],)) if 'manage_projects' in json.loads(row['capabilities_json'])}
+            result['items']=[item for item in result['items'] if item['id'] in administered]
+        if 'capabilities' in result:
+            result['capabilities']['local_principal_id']=principal['principal_id']
+        return result
+
     def _json(self, status, value):
         data = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -291,8 +401,17 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             self._check_origin()
-            if parsed.path.startswith("/v1/"):
-                self._json(200, workspace_read(parsed))
+            if parsed.path == '/v1/service-info' and not parsed.query:
+                self._json(200, {'api_version': 'research-workspace/v1', 'shared_mode': self._shared()})
+            elif self._shared() and parsed.path.startswith('/api/'):
+                raise RoadmapError(403, 'Legacy API is unavailable in shared mode')
+            elif self._shared() and parsed.path.startswith('/repo/'):
+                principal = self._principal()
+                if not principal['is_owner']:
+                    raise RoadmapError(403, 'Repository files require owner credential')
+                self._serve_repo_file()
+            elif parsed.path.startswith("/v1/"):
+                self._json(200, self._shared_read(parsed, self._principal()) if self._shared() else workspace_read(parsed))
             elif parsed.path == "/api/tasks" and not parsed.query:
                 self._json(200, snapshot())
             elif parsed.path == "/api/graph" and not parsed.query:
@@ -324,8 +443,8 @@ class Handler(BaseHTTPRequestHandler):
                 if exact not in {"true", "false"}:
                     raise RoadmapError(400, "Exact must be true or false")
                 self._json(200, variable_occurrences(params.get("query", [""])[0], exact == "true"))
-            elif parsed.path == '/assets/workspace-repositories.js' and not parsed.query:
-                body=(ROOT/'docs'/'workspace-repositories.js').read_bytes()
+            elif parsed.path in {'/assets/workspace-repositories.js','/assets/workspace-access.js'} and not parsed.query:
+                body=(ROOT/'docs'/parsed.path.rsplit('/',1)[-1]).read_bytes()
                 self.send_response(200);self.send_header('Content-Type','text/javascript; charset=utf-8')
                 self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(body)))
                 self.end_headers();self.wfile.write(body)
@@ -348,8 +467,32 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         try:
+            if self._shared() and parsed.path.startswith('/api/'):
+                raise RoadmapError(403, 'Legacy API is unavailable in shared mode')
+            principal = self._principal() if self._shared() and parsed.path.startswith('/v1/') else None
             payload = self._body()
-            if parsed.path == '/v1/repository-setup' and not parsed.query:
+            if principal is not None:
+                self._shared_write(parsed, payload, principal)
+            if parsed.path.startswith('/v1/git-sync-') and not parsed.query:
+                base={'project_id','repository_id'}
+                extra={'configure':{'enabled','export_selected'},'now':set(),'preview':set(),
+                       'apply':{'choices','remote_tip','bundle_id','expected_revision'}}
+                action=parsed.path.removeprefix('/v1/git-sync-')
+                if action not in extra or not isinstance(payload,dict) or set(payload)!=base|extra[action]:
+                    raise RoadmapError(400,'Invalid Git sharing request')
+                service=WorkspaceSyncService(_store());project=payload['project_id'];identity=payload['repository_id']
+                try:
+                    if action=='configure':result=service.configure(project,identity,enabled=payload['enabled'],export_selected=payload['export_selected'])
+                    elif action=='now':result=service.request_sync(project,identity)
+                    elif action=='preview':result=service.preview(project,identity)
+                    else:result=service.apply(project,identity,payload['choices'],payload['remote_tip'],payload['bundle_id'],payload['expected_revision'])
+                except SyncConflict as exc:raise RoadmapError(409,'Merge review changed; load a new preview') from None
+                except (PrivacyBlocked,TransportError):raise RoadmapError(503,'Git sharing is unavailable; check portable records and project Git access') from None
+            elif parsed.path == '/v1/repository-refresh' and not parsed.query:
+                if not isinstance(payload,dict) or set(payload)!={'project_id','repository_id'} or any(not isinstance(value,str) or not 0<len(value)<=200 for value in payload.values()):
+                    raise RoadmapError(400,'Repository refresh requires project_id and repository_id')
+                result=_store().refresh_repository(payload['project_id'],payload['repository_id'])
+            elif parsed.path == '/v1/repository-setup' and not parsed.query:
                 if not isinstance(payload,dict) or not {'root','apply'}<=set(payload) or set(payload)-{'root','apply','manifest','name'} or type(payload['apply']) is not bool:
                     raise RoadmapError(400,'Repository setup requires root and boolean apply')
                 if not isinstance(payload['root'],str) or not 0<len(payload['root'])<=4000 or '\x00' in payload['root']:
@@ -359,13 +502,14 @@ class Handler(BaseHTTPRequestHandler):
                 import workspace
                 try:
                     result=workspace.setup_project(payload['root'],f'http://127.0.0.1:{self.server.server_address[1]}',
-                        apply=payload['apply'],name=payload.get('name'),proposed_manifest=payload.get('manifest'))
+                        apply=payload['apply'],name=payload.get('name'),proposed_manifest=payload.get('manifest'),
+                        request_fn=self._setup_request if principal is not None else None)
                 except workspace.ApiError as exc:
                     raise RoadmapError(exc.status if 400<=exc.status<600 else 503,str(exc)) from exc
                 except workspace.GitAdapterError as exc:
                     raise RoadmapError(400,str(exc)) from exc
             elif parsed.path == "/v1/transactions" and not parsed.query:
-                result = _store().transact_v1(payload)
+                result = _store().transact_v1(payload, bearer_token=self.headers['Authorization'][7:]) if principal is not None else _store().transact_v1(payload)
             elif parsed.path == "/v1/variable-import-preview" and not parsed.query:
                 result = _store().preview_variable_registry(payload)
             elif parsed.path == '/v1/exchange-preview' and not parsed.query:
@@ -394,7 +538,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.startswith("/v1/"):
             self._json(exc.status, {"error": str(exc)})
             return
-        codes = {400: "validation", 403: "capability", 404: "not_found", 409: "conflict", 413: "size", 503: "unavailable"}
+        codes = {400: "validation", 401: "authentication", 403: "capability", 404: "not_found", 409: "conflict", 413: "size", 503: "unavailable"}
         try:
             latest = _store().snapshot()["revision"]
         except StoreError:
@@ -439,7 +583,7 @@ def checkpoint_before_upgrade(path):
         version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return None
-    if version not in (1, 2, 3, 4):
+    if version not in (1, 2, 3, 4, 5, 6):
         raise RoadmapError(503, 'Unsupported task database schema; no migration attempted')
     from migrate_roadmap import backup_database
     def file_hash(target):
@@ -479,11 +623,93 @@ def start_matcher_worker(path, interval=1.0):
     return stop, worker
 
 
+def start_repository_worker(path, interval=2.0):
+    """Inspect local Git outside SQLite locks; publish only changed snapshots."""
+    stop=threading.Event()
+    def consume():
+        store=RoadmapStore(path)
+        while not stop.is_set():
+            try:
+                with store._connection() as db:
+                    connections=[dict(row) for row in db.execute('SELECT id,project_id FROM repository_connections ORDER BY project_id,id')]
+                for connection in connections:
+                    if stop.is_set():break
+                    try:store.refresh_repository(connection['project_id'],connection['id'])
+                    except (StoreError,OSError,ValueError) as exc:
+                        print(f'Repository refresh retry: {exc}',flush=True)
+            except (StoreError,OSError,ValueError) as exc:
+                print(f'Repository worker retry: {exc}',flush=True)
+            stop.wait(interval)
+    worker=threading.Thread(target=consume,name='repository-refresh',daemon=True);worker.start()
+    return stop,worker
+
+
+def start_git_sync_worker(path,interval=2.0):
+    stop=threading.Event()
+    def consume():
+        service=WorkspaceSyncService(RoadmapStore(path))
+        while not stop.is_set():
+            try:service.tick()
+            except (StoreError,OSError,ValueError):print('Git sharing worker will retry',flush=True)
+            stop.wait(interval)
+    worker=threading.Thread(target=consume,name='git-sharing',daemon=True);worker.start()
+    return stop,worker
+
+
+def accepted_service_hosts(host,port,public_host=None):
+    header=f'[{host.lower()}]' if ':' in host else host.lower()
+    result={f'{header}:{port}',f'127.0.0.1:{port}',f'localhost:{port}',f'[::1]:{port}'}
+    if public_host is not None:
+        if not isinstance(public_host,str) or not re.fullmatch(r'(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[A-Fa-f0-9:]+\])(?::[0-9]{1,5})?',public_host):
+            raise RoadmapError(400,'Public host must be an explicit hostname with optional port')
+        parsed=urllib.parse.urlsplit('https://'+public_host)
+        try:specified_port=parsed.port
+        except ValueError:raise RoadmapError(400,'Invalid public host port') from None
+        if specified_port is not None and not 1<=specified_port<=65535:raise RoadmapError(400,'Invalid public host port')
+        result.add(public_host.lower())
+    return result
+
+
+def startup_security(host, shared_mode, tls_cert, tls_key, store_path):
+    """Validate remote startup before binding; return a configured TLS context."""
+    if not shared_mode:
+        if host not in {'127.0.0.1', 'localhost', '::1'}:
+            raise RoadmapError(400, 'Non-loopback binding requires shared mode')
+        if tls_cert is not None or tls_key is not None:
+            raise RoadmapError(400, 'TLS options require shared mode')
+        return None
+    if tls_cert is None or tls_key is None:
+        raise RoadmapError(400, 'Shared mode requires a TLS certificate and key')
+    try:
+        with RoadmapStore(store_path)._connection() as db:
+            rows = db.execute('SELECT t.expires_at FROM auth_tokens t '
+                              'JOIN principals p ON p.id=t.principal_id '
+                              'WHERE t.is_owner=1 AND t.revoked_at IS NULL '
+                              'AND p.archived_at IS NULL').fetchall()
+        now = datetime.now(timezone.utc)
+        if not any(datetime.fromisoformat(row[0]) > now for row in rows):
+            raise RoadmapError(503, 'Shared mode requires a current owner credential')
+    except sqlite3.Error as exc:
+        raise RoadmapError(503, 'Credential store is unavailable') from exc
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        context.load_cert_chain(str(tls_cert), str(tls_key))
+    except (OSError, ssl.SSLError) as exc:
+        raise RoadmapError(400, 'TLS certificate or key is unusable') from exc
+    return context
+
+
 def main(argv=None):
     global STORE_PATH
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8769)
     parser.add_argument("--store", type=Path, default=STORE_PATH)
+    parser.add_argument('--host', default='127.0.0.1')
+    parser.add_argument('--shared-mode', action='store_true')
+    parser.add_argument('--public-host',help='explicit trusted HTTP Host header, hostname with optional port')
+    parser.add_argument('--tls-cert', type=Path)
+    parser.add_argument('--tls-key', type=Path)
     args = parser.parse_args(argv)
     selected_store = args.store.resolve()
     if not selected_store.is_file():
@@ -495,14 +721,23 @@ def main(argv=None):
                 print(f'Pre-migration checkpoint: {checkpoint}', flush=True)
             STORE_PATH = selected_store
             _store(selected_store).snapshot()
-            server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+            tls = startup_security(args.host, args.shared_mode, args.tls_cert, args.tls_key, selected_store)
+            accepted_service_hosts(args.host,args.port,args.public_host)
+            server = ThreadingHTTPServer((args.host, args.port), Handler)
+            server.shared_mode = args.shared_mode
+            server.accepted_hosts = accepted_service_hosts(args.host,server.server_port,args.public_host)
+            if tls is not None:
+                server.socket = tls.wrap_socket(server.socket, server_side=True)
             stop, worker = start_matcher_worker(selected_store)
-            print(f"Research Workspace at http://127.0.0.1:{args.port}/ (store: {selected_store})")
+            repository_stop, repository_worker = start_repository_worker(selected_store)
+            sync_stop,sync_worker=start_git_sync_worker(selected_store)
+            scheme = 'https' if tls is not None else 'http'
+            print(f"Research Workspace at {scheme}://{args.host}:{server.server_port}/ (store: {selected_store})")
             try: server.serve_forever()
             except KeyboardInterrupt: pass
             finally:
-                stop.set()
-                worker.join(timeout=6)
+                stop.set();repository_stop.set();sync_stop.set()
+                worker.join(timeout=6);repository_worker.join(timeout=6);sync_worker.join(timeout=6)
                 server.server_close()
     except RoadmapError as exc:
         raise SystemExit(str(exc)) from exc

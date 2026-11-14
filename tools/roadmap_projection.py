@@ -173,7 +173,7 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
     coverage = _coverage(db,project_id)
     envelope = {'api_version':API_VERSION,'project_id':project_id,'revision':revision,'coverage':coverage,'next_cursor':None}
     if resource=='capabilities':
-        local = db.execute("SELECT p.id FROM principals p JOIN project_members m ON m.principal_id=p.id WHERE m.project_id=? AND p.label='local' ORDER BY p.id LIMIT 1",(project_id,)).fetchone()
+        local = db.execute("SELECT principal_id FROM local_principals WHERE project_id=? AND label='local'",(project_id,)).fetchone()
         return {**envelope,'capabilities':{'limits':LIMITS,'identity_kind':'trusted_local_label','authenticated':False,'local_principal_id':local[0] if local else None,'concurrency_modes':['global'],'research_collections_available':True,'documents_available':True}}
     max_limit = LIMITS['neighborhood_nodes'] if resource=='neighborhood' else LIMITS['list_items']
     limit = max_limit if limit is None else limit

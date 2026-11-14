@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 
-OPS = {'register_root', 'register_artifact', 'register_artifact_version',
+OPS = {'register_root', 'bind_root', 'register_artifact', 'register_artifact_version',
        'create_index_run', 'stage_batch', 'publish_run', 'create_question',
        'record_negative_search', 'import_variable_registry', 'revise_question'}
 RESOURCES = {'artifacts', 'artifact-versions', 'index-runs', 'occurrences',
@@ -192,8 +192,17 @@ def apply_operation(db,project,principal,op,request_id):
         if not path.is_dir(): error(400,'Registered source root must be an existing directory')
         db.execute('INSERT INTO artifact_roots VALUES(?,?,?,?,?)',(identity,project,str(path),principal,now))
         result={'type':'artifact_root','id':identity}
+    elif kind=='bind_root':
+        root=scoped(db,'artifact_roots',project,op.get('root_id'))
+        if not root['path'].startswith('workspace-root:'):
+            error(409,'Source root is already bound on this host')
+        path=Path(text(op.get('path'),'root path',4000)).resolve()
+        if not path.is_dir(): error(400,'Bound source root must be an existing directory')
+        db.execute('UPDATE artifact_roots SET path=? WHERE project_id=? AND id=?',(str(path),project,root['id']))
+        result={'type':'artifact_root','id':root['id']}
     elif kind=='register_artifact':
         root=scoped(db,'artifact_roots',project,op.get('root_id'))
+        if root['path'].startswith('workspace-root:'): error(409,'Source root is unbound on this host')
         _path(root['path'],op.get('relative_path'))
         db.execute('INSERT INTO artifacts VALUES(?,?,?,?,?,?,?,1)',(identity,project,root['id'],op['relative_path'],text(op.get('kind'),'artifact kind',100),principal,now))
         result={'type':'artifact','id':identity,'record_revision':1}
@@ -202,6 +211,7 @@ def apply_operation(db,project,principal,op,request_id):
             optional_text(op.get(field),field,limit=2000)
         artifact=scoped(db,'artifacts',project,op.get('artifact_id'))
         root=scoped(db,'artifact_roots',project,artifact['root_id'])
+        if root['path'].startswith('workspace-root:'): error(409,'Source root is unbound on this host')
         path=_path(root['path'],artifact['relative_path'])
         try:
             with path.open('rb') as source:
@@ -217,8 +227,10 @@ def apply_operation(db,project,principal,op,request_id):
         old=db.execute('SELECT * FROM artifact_versions WHERE project_id=? AND id=?',(project,identity)).fetchone()
         if old and any(op.get(k) is not None and op[k]!=old[k] for k in ('repository_revision','binary_build_id','source_created_at')):
             error(409,'Existing immutable source metadata differs')
+        if old and (old['sha256']!=source_hash or old['artifact_id']!=artifact['id'] or old['byte_length']!=len(body)):
+            error(409,'Existing immutable source identity differs')
+        db.execute('INSERT OR IGNORE INTO artifact_blobs VALUES(?,?,?)',(project,source_hash,body))
         if not old:
-            db.execute('INSERT OR IGNORE INTO artifact_blobs VALUES(?,?,?)',(project,source_hash,body))
             db.execute('INSERT INTO artifact_versions VALUES(?,?,?,?,?,?,?,?,?,?,?)',(identity,project,artifact['id'],source_hash,len(body),op.get('repository_revision'),op.get('binary_build_id'),'available',op.get('source_created_at'),principal,now))
         result={'type':'artifact_version','id':identity,'sha256':source_hash}
     elif kind=='create_index_run':
@@ -302,7 +314,8 @@ def apply_operation(db,project,principal,op,request_id):
     else:
         error(400,'Unknown research operation')
     event_id=str(uuid.uuid4())
-    cur=db.execute("INSERT INTO workspace_events(id,project_id,request_id,actor_id,entity_type,entity_id,kind,after_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?)",(event_id,project,request_id,principal,result['type'],result['id'],kind,canonical(result),now))
+    event_kind='hydrate_artifact_version' if kind=='register_artifact_version' and old else kind
+    cur=db.execute("INSERT INTO workspace_events(id,project_id,request_id,actor_id,entity_type,entity_id,kind,after_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?)",(event_id,project,request_id,principal,result['type'],result['id'],event_kind,canonical(result),now))
     if kind in ('publish_run','create_question') or (kind=='revise_question' and result['matching_changed']):
         db.execute('INSERT INTO research_outbox(id,project_id,event_sequence,kind,payload_json,created_at) VALUES(?,?,?,?,?,?)',(str(uuid.uuid4()),project,cur.lastrowid,kind,canonical(result),now))
     if kind=='import_variable_registry' and not result.get('already_imported'):
@@ -496,6 +509,8 @@ def read(db,resource,project,*,limit=None,cursor=None,**unused):
         for key in list(item):
             if key.endswith('_json'): item[key[:-5]]=json.loads(item.pop(key))
         if 'revision' in item: item['record_revision']=item.pop('revision')
+        if resource=='artifact-versions':
+            item['local_bytes_available']=db.execute('SELECT 1 FROM artifact_blobs WHERE project_id=? AND sha256=?',(project,item['sha256'])).fetchone() is not None
         if resource=='observations':
             item['locator_key']=json.loads(item['locator_key'])
             item['candidate_type']='observation'

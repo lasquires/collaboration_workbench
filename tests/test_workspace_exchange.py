@@ -23,6 +23,7 @@ class ExchangeTests(unittest.TestCase):
                 old=db.execute('SELECT id FROM projects').fetchone()[0]
                 db.execute('UPDATE projects SET id=? WHERE id=?',(self.project,old))
                 db.execute('UPDATE project_members SET project_id=? WHERE project_id=?',(self.project,old))
+                db.execute('UPDATE local_principals SET project_id=? WHERE project_id=?',(self.project,old))
                 db.commit(); db.execute('PRAGMA foreign_keys=ON')
                 exchange.create_schema(db)
                 self.actors.append(db.execute('SELECT principal_id FROM project_members').fetchone()[0])

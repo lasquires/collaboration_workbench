@@ -17,9 +17,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects
+    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange
 except ImportError:
-    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects
+    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange
 
 SCHEMA_VERSION = 1
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
@@ -415,8 +415,12 @@ class RoadmapStore:
                     return roadmap_matcher.read(db, resource, project_id, **options)
                 if resource in roadmap_documents.RESOURCES:
                     return roadmap_documents.read(db, resource, project_id, **options)
-                if resource == 'repositories':
-                    return roadmap_projects.read(db,project_id)
+                if resource in ('repositories','repository-updates'):
+                    try:
+                        from . import workspace_repository_service
+                    except ImportError:
+                        import workspace_repository_service
+                    return workspace_repository_service.read(db,project_id,resource=resource,**options)
                 if resource in roadmap_structure.RESOURCES:
                     return roadmap_structure.read(db, resource, project_id, **options)
                 return roadmap_projection.read_projection(db, resource, project_id, **options)
@@ -467,6 +471,13 @@ class RoadmapStore:
             finally:
                 db.rollback()
 
+    def refresh_repository(self, project_id, repository_id, *, snapshotter=None):
+        try:
+            from .workspace_repository_service import refresh
+        except ImportError:
+            from workspace_repository_service import refresh
+        return refresh(self,project_id,repository_id,snapshotter=snapshotter)
+
     def merge_reversal_preview(self, project_id, merge_id):
         with self._connection() as db:
             db.execute('BEGIN')
@@ -506,7 +517,7 @@ class RoadmapStore:
             finally:
                 db.rollback()
 
-    def transact_v1(self, payload):
+    def transact_v1(self, payload, *, bearer_token=None):
         """Scoped adapter, retaining the existing single global CAS transaction."""
         required = {"project_id", "actor", "request_id", "expected_revision", "operations"}
         if not isinstance(payload, dict) or set(payload) != required:
@@ -539,6 +550,10 @@ class RoadmapStore:
                 digest = hashlib.sha256(_json({"v1": payload}).encode()).hexdigest()
                 if digest != prior["payload_digest"]:
                     raise StoreError(409, "Request ID reused with different payload")
+                if bearer_token is not None:
+                    return self.transact(payload["expected_revision"], payload["request_id"],
+                                         {"name": principal["label"], "kind": "agent"}, payload["operations"],
+                                         _workspace={"payload": payload, "aliases": {}, "bearer_token": bearer_token})
                 return json.loads(prior["result_json"])
             operations = _copy(payload["operations"])
             local_creates = {}
@@ -552,7 +567,7 @@ class RoadmapStore:
                         if isinstance(op.get(field),str) and op[field] in local_creates:
                             op[field] = local_creates[op[field]]
                     continue
-                if op.get("op") in roadmap_research.OPS | roadmap_matcher.OPS | roadmap_documents.OPS | roadmap_projects.OPS | {"process_jobs"}:
+                if op.get("op") in roadmap_research.OPS | roadmap_matcher.OPS | roadmap_documents.OPS | roadmap_projects.OPS | roadmap_exchange.OPS | {"process_jobs"}:
                     continue
                 if op.get("op") == "create":
                     record = op.get("record")
@@ -589,7 +604,7 @@ class RoadmapStore:
                     record_fields["dependencies"] = converted
         return self.transact(payload["expected_revision"], payload["request_id"],
                              {"name": principal["label"], "kind": "agent"}, operations,
-                             _workspace={"payload": payload, "aliases": local_creates})
+                             _workspace={"payload": payload, "aliases": local_creates, "bearer_token": bearer_token})
 
     def transact(self, expected_revision, request_id, actor, operations, *, _workspace=None):
         actor = self._actor(actor)
@@ -608,6 +623,33 @@ class RoadmapStore:
             db.execute("BEGIN IMMEDIATE")
             try:
                 self._meta(db)
+                if _workspace and _workspace.get("bearer_token") is not None:
+                    try:
+                        from . import workspace_auth
+                    except ImportError:
+                        import workspace_auth
+                    credential = workspace_auth.authenticate(db, _workspace["bearer_token"])
+                    envelope = _workspace["payload"]
+                    project_id = envelope["project_id"]
+                    principal_id = envelope["actor"]["principal_id"]
+                    if credential["principal_id"] != principal_id or (not credential["is_owner"] and credential["project_id"] != project_id):
+                        raise StoreError(403, "Transaction actor or project differs from credential")
+                    membership = db.execute("SELECT capabilities_json FROM project_members WHERE project_id=? AND principal_id=?", (project_id, principal_id)).fetchone()
+                    if membership is None or "contribute" not in json.loads(membership[0]):
+                        raise StoreError(403, "Principal lacks current project contribution")
+                    owner_ops = {"create_project", "register_repository", "register_root", "register_artifact", "register_artifact_version", "register_document_version", "bind_root"}
+                    names = {op.get("op") for op in operations if isinstance(op, dict)}
+                    if names & owner_ops and not credential["is_owner"]:
+                        raise StoreError(403, "Host filesystem access requires owner credential")
+                    required = {"contribute"}
+                    if names & {"record_validation", "complete_task", "approve_guidance"}:
+                        required.add("review")
+                    if "handoff_claim" in names:
+                        required.add("manage_claims")
+                    if names & {"create_project", "register_repository"}:
+                        required.add("manage_projects")
+                    if not credential["is_owner"] and not required <= set(credential["capabilities"]):
+                        raise StoreError(403, "Credential lacks current capability")
                 prior = db.execute("SELECT * FROM transactions WHERE request_id=?", (request_id,)).fetchone()
                 if prior:
                     if prior["payload_digest"] != digest:
@@ -615,6 +657,21 @@ class RoadmapStore:
                     return json.loads(prior["result_json"])
                 if expected_revision != self._revision(self._meta(db)):
                     raise StoreError(409, "Task revision changed; reread and reconcile")
+                exchange_ops = [op for op in operations if isinstance(op, dict) and op.get("op") in roadmap_exchange.OPS]
+                if exchange_ops:
+                    if not _workspace or len(operations) != 1:
+                        raise StoreError(400, "Exchange requires one scoped operation per transaction")
+                    project = _workspace["payload"]["project_id"]
+                    principal = _workspace["payload"]["actor"]["principal_id"]
+                    change = roadmap_exchange.apply_operation(db, project, principal, operations[0], request_id,
+                                                               review_import=True)
+                    db.execute("UPDATE store_meta SET revision=revision+1")
+                    result = {"revision": self._revision(self._meta(db)),
+                              "event_cursor": roadmap_projection._event_cursor(db, project),
+                              "changed_records": [change], "request_id": request_id}
+                    db.execute("INSERT INTO transactions VALUES(?,?,?)", (request_id, digest, _json(result)))
+                    db.commit()
+                    return result
                 tasks, links = self._state(db)
                 before = _copy(tasks)
                 metadata_before = {row['uid']:dict(row) for row in db.execute('SELECT * FROM tasks')}

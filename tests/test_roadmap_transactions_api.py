@@ -128,6 +128,7 @@ class RoadmapTransactionsApiTests(unittest.TestCase):
         class OneShotServer:
             def __init__(self, address, handler):
                 observed["address"] = address
+                self.server_port = address[1]
             def serve_forever(self):
                 return
             def server_close(self):

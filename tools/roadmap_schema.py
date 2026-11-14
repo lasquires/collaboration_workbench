@@ -7,11 +7,12 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 FOUNDATION_DDL = [
     "CREATE TABLE projects(id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, goal TEXT NOT NULL DEFAULT '', acceptance_json TEXT NOT NULL DEFAULT '[]', entry_documents_json TEXT NOT NULL DEFAULT '[]', coverage_json TEXT NOT NULL DEFAULT '{}', revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1), created_by TEXT, created_at TEXT, updated_at TEXT, archived_at TEXT)",
     "CREATE TABLE principals(id TEXT PRIMARY KEY, label TEXT NOT NULL, identity_kind TEXT NOT NULL CHECK(identity_kind='trusted_local_label'), revision INTEGER NOT NULL DEFAULT 1, created_at TEXT, updated_at TEXT, archived_at TEXT)",
+    "CREATE TABLE local_principals(project_id TEXT NOT NULL REFERENCES projects(id),label TEXT NOT NULL,principal_id TEXT NOT NULL REFERENCES principals(id),PRIMARY KEY(project_id,label))",
     "CREATE TABLE agent_sessions(id TEXT PRIMARY KEY, principal_id TEXT NOT NULL REFERENCES principals(id), created_at TEXT)",
     "CREATE TABLE project_members(project_id TEXT NOT NULL REFERENCES projects(id), principal_id TEXT NOT NULL REFERENCES principals(id), capabilities_json TEXT NOT NULL DEFAULT '[\"contribute\"]', PRIMARY KEY(project_id,principal_id))",
     "CREATE TABLE areas(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), parent_id TEXT, title TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, created_by TEXT REFERENCES principals(id), created_at TEXT, updated_at TEXT, archived_at TEXT, UNIQUE(project_id,id), FOREIGN KEY(project_id,parent_id) REFERENCES areas(project_id,id), CHECK(id<>parent_id))",
@@ -37,10 +38,15 @@ FOUNDATION_DDL = [
 
 
 def principal_for_label(db, project_id, label):
-    # Local labels are intentionally unauthenticated, but repeat labels retain IDs.
-    identity = str(uuid.uuid5(uuid.UUID(project_id), 'trusted-local:' + label))
+    # Labels are local attribution, never cross-installation authentication.
+    found=db.execute('SELECT principal_id FROM local_principals WHERE project_id=? AND label=?',(project_id,label)).fetchone()
+    if found:return found[0]
+    installation=db.execute('SELECT store_id FROM store_meta WHERE singleton=1').fetchone()[0]
+    namespace=uuid.uuid5(uuid.NAMESPACE_URL,'workspace-installation:'+installation)
+    identity=str(uuid.uuid5(namespace,project_id+':trusted-local:'+label))
     db.execute("INSERT OR IGNORE INTO principals(id,label,identity_kind) VALUES(?,?,'trusted_local_label')", (identity,label))
     db.execute('INSERT OR IGNORE INTO project_members(project_id,principal_id) VALUES(?,?)', (project_id,identity))
+    db.execute('INSERT INTO local_principals VALUES(?,?,?)',(project_id,label,identity))
     return identity
 
 
@@ -97,11 +103,19 @@ def migrate(db, *, fresh=False, bootstrap_slug="ssg2"):
     version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return
-    if version not in (1, 2, 3, 4):
+    if version not in (1, 2, 3, 4, 5, 6):
         raise ValueError('Unsupported task database schema')
     db.execute('BEGIN IMMEDIATE')
     try:
         meta = db.execute('SELECT * FROM store_meta').fetchone()
+        if version>=2:
+            db.execute('CREATE TABLE IF NOT EXISTS local_principals(project_id TEXT NOT NULL REFERENCES projects(id),label TEXT NOT NULL,principal_id TEXT NOT NULL REFERENCES principals(id),PRIMARY KEY(project_id,label))')
+            # Preserve historical local UUIDs on upgrades without treating imported
+            # remote labels as this installation's future default actor.
+            for actor in db.execute('SELECT m.project_id,p.id,p.label FROM project_members m JOIN principals p ON p.id=m.principal_id').fetchall():
+                legacy=str(uuid.uuid5(uuid.UUID(actor[0]),'trusted-local:'+actor[2]))
+                if actor[1]==legacy:
+                    db.execute('INSERT OR IGNORE INTO local_principals VALUES(?,?,?)',(actor[0],actor[2],actor[1]))
         if version == 1:
             for column in [
                 'uid TEXT', 'project_id TEXT REFERENCES projects(id)',
@@ -139,6 +153,12 @@ def migrate(db, *, fresh=False, bootstrap_slug="ssg2"):
         except ImportError:
             import roadmap_projects
         roadmap_projects.create_schema(db)
+        try:
+            from . import workspace_repository_service,workspace_auth
+        except ImportError:
+            import workspace_repository_service,workspace_auth
+        workspace_repository_service.create_schema(db)
+        workspace_auth.create_schema(db)
         _migration_checkpoint(db)
         db.execute('UPDATE store_meta SET schema_version=?,revision=revision+?', (SCHEMA_VERSION,0 if fresh else 1))
         if db.execute('PRAGMA foreign_key_check').fetchone():

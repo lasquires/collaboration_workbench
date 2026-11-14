@@ -30,7 +30,7 @@ python workspace.py setup --repo <repository-root> --apply
 python workspace.py doctor --repo <repository-root>
 ```
 
-Setup first previews the portable project manifest and agent instructions. Apply
+Setup first previews the portable project manifest, schema contract and agent instructions. Apply
 registers the project through the local service and writes those integration
 files. Repeated setup retains the project identity without changing workspace
 state. Different repositories can have separate projects; clones retain the same
@@ -46,8 +46,11 @@ This is an actively developed prototype, not a complete release. Independent
 startup, project registration, tasks, evidence indexing, matching hints, documents,
 question editing, and guarded core merge/reversal APIs are implemented.
 
-Automatic Git source refresh, shared research synchronization, optional live-service
-request authentication and transport, complete merge conflict compensation, and final
+Automatic Git source refresh is implemented. Optional live-service bearer access,
+TLS startup, project-scoped collaborator credentials and browser sign-in are
+implemented; see [self-hosting](docs/self-hosting.md). Opt-in batched
+[Git sharing and field conflict review](docs/git-sharing.md) are implemented.
+Live/offline reconnect, complete merge conflict compensation and final
 end-to-end/scale acceptance are still being completed. Doctor reports pending
 synchronization explicitly. A successful connection is not evidence that research
 has synchronized, and workflow completion never establishes forensic correctness.
@@ -59,6 +62,5 @@ credentials or live project databases are included in this repository.
 
 The [hybrid collaboration design](docs/superpowers/specs/2026-11-13-hybrid-collaboration.md)
 covers optional free self-hosting, Git-only fallback, batched synchronization and
-offline reconciliation. Authentication and read-only Git snapshot modules have
-isolated tests; their presence alone does not enable remote sharing or continuous
-synchronization.
+offline reconciliation. Shared hosting is explicitly enabled; the default remains local. Source snapshots,
+portable research synchronization and forensic acceptance have separate status.

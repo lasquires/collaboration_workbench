@@ -181,3 +181,27 @@ class ExchangeCliHttpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CredentialRequestTests(unittest.TestCase):
+    def test_token_file_requires_secure_transport_and_never_follows_redirect(self):
+        with tempfile.TemporaryDirectory() as folder:
+            token=Path(folder)/'credential';token.write_text('x'*64)
+            with self.assertRaisesRegex(roadmap_cli.ApiError,'HTTPS'):
+                roadmap_cli.request('http://example.com','/v1/projects',token_file=token)
+            with patch.object(roadmap_cli.urllib.request,'build_opener') as build:
+                response=build.return_value.open.return_value.__enter__.return_value
+                response.read.return_value=b'{"items":[]}'
+                self.assertEqual(roadmap_cli.request('https://example.com','/v1/projects',token_file=token),{'items':[]})
+                req=build.return_value.open.call_args.args[0]
+                self.assertEqual(req.get_header('Authorization'),'Bearer '+'x'*64)
+                handler=build.call_args.args[0]
+                self.assertIsNone(handler.redirect_request(req,None,302,'Moved',{},'https://elsewhere.example'))
+
+    def test_malformed_token_and_credentialed_url_fail_before_network(self):
+        with tempfile.TemporaryDirectory() as folder:
+            token=Path(folder)/'credential';token.write_text('bad\nheader')
+            with self.assertRaises(roadmap_cli.ApiError):
+                roadmap_cli.request('https://example.com','/v1/projects',token_file=token)
+            with self.assertRaises(roadmap_cli.ApiError):
+                roadmap_cli.request('https://user:password@example.com','/v1/projects')
