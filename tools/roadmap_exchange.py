@@ -16,8 +16,8 @@ except ImportError:
 
 OPS = {'register_exchange_snapshot', 'import_bundle'}
 RESOURCES = {'exchange'}
-TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_answer_selections question_resolution_events'.split())
-IMMUTABLE = set('answers principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_resolution_events'.split())
+TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_answer_selections question_resolution_events git_source_manifests'.split())
+IMMUTABLE = set('answers principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_resolution_events git_source_manifests'.split())
 # Only mutable relationships have row-removal semantics. Evidence/history rows
 # remain append-only; unknown-base omissions never establish a deletion.
 PRESENCE_TABLES = {'task_links'}
@@ -146,7 +146,7 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
     for event in history:
         event.pop('sequence',None)
     if portable:
-        history = [event for event in history if event['kind'] not in {'bind_root','hydrate_artifact_version','repository_snapshot','register_repository','import_bundle','import_publication'}]
+        history = [event for event in history if event['kind'] not in {'bind_root','hydrate_artifact_version','repository_snapshot','register_repository','import_bundle','import_publication','repository_index_publication'}]
         history = [{**{key:event[key] for key in _PORTABLE_HISTORY - {'payload_sha256'}},
                     'payload_sha256':research.digest({key:event.get(key) for key in ('before_json','after_json','rationale')})}
                    for event in history]
@@ -180,7 +180,7 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
 
 def _compatible_schema(db,schema):
     current=_schema(db)
-    return (set(current)-set(schema)<={'task_journal_entries','merge_compensations','finding_revision_lineage','evidence_change_events','research_review_notices','answer_contexts','answer_reviews','question_answer_selections','question_resolution_events'}
+    return (set(current)-set(schema)<={'task_journal_entries','merge_compensations','finding_revision_lineage','evidence_change_events','research_review_notices','answer_contexts','answer_reviews','question_answer_selections','question_resolution_events','git_source_manifests'}
             and not set(schema)-set(current) and all(schema[key]==current[key] for key in schema))
 
 
@@ -280,6 +280,11 @@ def _validate(db, project, bundle):
     except ImportError:
         import workspace_answers
     workspace_answers.validate_bundle(project,bundle['records'])
+    try:
+        from . import workspace_source_index
+    except ImportError:
+        import workspace_source_index
+    workspace_source_index.validate_bundle(project,bundle['records'])
     validations={r['id']:r for r in bundle['records']['validation_records']}
     task_namespace.validate_tasks(db,project,bundle['records']['tasks'])
     for row in bundle['records']['tasks']:
@@ -343,6 +348,12 @@ def preview_import(db, project_id, bundle, *, merge_base_id=DECLARED_ANCESTOR):
                 # CAS counters and last-update metadata are installation-local
                 # preconditions, not competing domain values from another writer.
                 if table not in IMMUTABLE and name in {'revision','structure_revision','updated_at'}:continue
+                if name=='created_at':
+                    try:
+                        from . import workspace_source_index
+                    except ImportError:
+                        import workspace_source_index
+                    if all(workspace_source_index.generated_first_seen(table,row) for row in (current,theirs) if row is not None):continue
                 local_value=current_fields.get(name,missing); value=remote_fields.get(name,missing); old=original_fields.get(name,missing)
                 if current is None or local_value==value: continue
                 fields[name]={'base':None if old is missing else old,'local':None if local_value is missing else local_value,'remote':None if value is missing else value,

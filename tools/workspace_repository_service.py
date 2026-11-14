@@ -1,7 +1,7 @@
 """Service-owned local repository scans, published with source-revision CAS.
 
-Git inspection runs outside database transactions. These records describe source
-updates, not indexed evidence, shared synchronization or forensic acceptance.
+Git inspection runs outside database transactions. Source updates and committed evidence publication have distinct state.
+Neither establishes shared synchronization or forensic acceptance.
 """
 import hashlib
 import json
@@ -9,15 +9,16 @@ import uuid
 from datetime import datetime,timezone
 from pathlib import Path
 try:
-    from . import roadmap_research as research,workspace_git_watch as watcher,roadmap_schema
+    from . import roadmap_research as research,workspace_git_watch as watcher,roadmap_schema,workspace_source_index
 except ImportError:
-    import roadmap_research as research,workspace_git_watch as watcher,roadmap_schema
+    import roadmap_research as research,workspace_git_watch as watcher,roadmap_schema,workspace_source_index
 
 
 def create_schema(db):
     columns={row[1] for row in db.execute('PRAGMA table_info(repository_connections)')}
     for definition in ("source_state TEXT NOT NULL DEFAULT 'pending'",'source_revision INTEGER NOT NULL DEFAULT 0',
-                       'snapshot_id TEXT','last_error TEXT'):
+                       'snapshot_id TEXT','last_error TEXT',
+                       "evidence_state TEXT NOT NULL DEFAULT 'pending'",'evidence_head TEXT','evidence_manifest_id TEXT','evidence_error TEXT'):
         if definition.split()[0] not in columns:db.execute('ALTER TABLE repository_connections ADD COLUMN '+definition)
     db.execute('CREATE UNIQUE INDEX IF NOT EXISTS repository_project_identity ON repository_connections(project_id,id)')
     db.execute('CREATE TABLE IF NOT EXISTS repository_snapshots(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,repository_id TEXT NOT NULL,source_revision INTEGER NOT NULL,fingerprint TEXT NOT NULL,snapshot_json TEXT NOT NULL,changes_json TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(project_id,repository_id,source_revision),FOREIGN KEY(project_id,repository_id) REFERENCES repository_connections(project_id,id))')
@@ -51,6 +52,17 @@ def refresh(store,project,identity,*,snapshotter=None):
         research.error(400,'Repository scan lacks a valid fingerprint')
     raw=research.canonical(snapshot)
     if len(raw.encode('utf-8'))>8*1024*1024:research.error(413,'Repository snapshot exceeds publication limit')
+    capture=None;evidence_error=None
+    needs_evidence=bool(snapshot.get('head')) and (before['evidence_head']!=snapshot['head'] or before['evidence_state'] in ('pending','failed') or not before['evidence_manifest_id'])
+    if needs_evidence:
+        try:
+            try:
+                from .workspace_git_capture import capture_commit
+            except ImportError:
+                from workspace_git_capture import capture_commit
+            capture=capture_commit(before['root'],snapshot['head'])
+        except (watcher.GitWatchError,OSError,ValueError) as exc:
+            evidence_error=str(exc)[:8000]
     baseline=previous or {'root':snapshot['root'],'head':None,'branch':None,'index_identity':None,
                           'paths':[],'incomplete':False,'fingerprint':None}
     changes=watcher.compare_snapshots(baseline,snapshot)
@@ -62,13 +74,24 @@ def refresh(store,project,identity,*,snapshotter=None):
             row=_connection(db,project,identity)
             if row['source_revision']!=before['source_revision'] or row['root']!=before['root']:
                 research.error(409,'Repository source state changed during scan; refresh again')
-            if row['snapshot_id'] and previous and previous['fingerprint']==fingerprint and row['source_state']==state:
+            watch_same=row['snapshot_id'] and previous and previous['fingerprint']==fingerprint and row['source_state']==state
+            evidence_same=not needs_evidence or capture is None and row['evidence_state']=='failed' and row['evidence_error']==evidence_error
+            if watch_same and evidence_same:
                 db.rollback()
                 return {'changed':False,'repository_id':identity,'source_revision':row['source_revision'],
                         'source_state':row['source_state'],'revision':store._revision(store._meta(db))}
             version=row['source_revision']+1;sid=str(uuid.uuid4());request_id='repository-scan-'+str(uuid.uuid4())
             db.execute('INSERT INTO repository_snapshots VALUES(?,?,?,?,?,?,?,?)',
                        (sid,project,identity,version,fingerprint,raw,research.canonical(changes),current))
+            actor=roadmap_schema.principal_for_label(db,project,'local')
+            evidence=None
+            if capture is not None:
+                evidence=workspace_source_index.publish(db,project,actor,request_id,capture)
+                db.execute('UPDATE repository_connections SET evidence_state=?,evidence_head=?,evidence_manifest_id=?,evidence_error=NULL WHERE project_id=? AND id=?',('current' if evidence['coverage']['complete'] else 'partial',snapshot['head'],evidence['id'],project,identity))
+            elif evidence_error is not None:
+                db.execute("UPDATE repository_connections SET evidence_state='failed',evidence_error=? WHERE project_id=? AND id=?",(evidence_error,project,identity))
+            elif snapshot.get('head') is None:
+                db.execute("UPDATE repository_connections SET evidence_state='pending' WHERE project_id=? AND id=?",(project,identity))
             errors=list(snapshot.get('errors',[]))+list(changes.get('errors',[]))
             dirty=int(bool(snapshot.get('paths'))) if not snapshot.get('incomplete') else row['dirty']
             db.execute('UPDATE repository_connections SET head_commit=?,branch=?,dirty=?,source_state=?,source_revision=?,snapshot_id=?,last_error=?,updated_at=? WHERE project_id=? AND id=?',
@@ -83,7 +106,7 @@ def refresh(store,project,identity,*,snapshotter=None):
                        (str(uuid.uuid4()),project,request_id,actor,'repository',identity,'repository_snapshot',research.canonical(summary),current))
             db.execute('UPDATE store_meta SET revision=revision+1')
             result={'changed':True,'repository_id':identity,'source_revision':version,'source_state':state,
-                    'changes':changes,'revision':store._revision(store._meta(db))}
+                    'changes':changes,'evidence':evidence,'revision':store._revision(store._meta(db))}
             db.execute('INSERT INTO transactions VALUES(?,?,?)',(request_id,hashlib.sha256(raw.encode('utf-8')).hexdigest(),research.canonical(result)))
             db.commit();return result
         except Exception:

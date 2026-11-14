@@ -61,6 +61,14 @@ class SharedHttpTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
 
+    def test_source_manifest_reads_are_scoped_and_capture_remains_owner_only(self):
+        path='/v1/source-manifests?project_id='+self.project
+        self.assertEqual(self.request(path)[0],401)
+        self.assertEqual(self.request(path,self.member_token)[0],200)
+        self.assertEqual(self.request('/v1/source-manifests?project_id='+self.other,self.member_token)[0],403)
+        self.assertEqual(self.request(path+'&manifest_id=unknown',self.member_token)[1]['items'],[])
+        self.assertEqual(self.request('/v1/repository-refresh',self.member_token,{'project_id':self.project,'repository_id':'arbitrary-owner-path'})[0],403)
+
     def test_answer_acceptance_requires_independent_authorized_http_reviewer(self):
         with self.store._connection() as db:owner=auth.authenticate(db,self.owner_token)['principal_id']
         def write(actor,token,*ops):

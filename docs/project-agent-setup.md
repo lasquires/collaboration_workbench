@@ -175,3 +175,66 @@ shared resolution remains visible as `recorded_state=resolved` while its effecti
 state can require local review; a fresh authorized independent review establishes
 local acceptance. Shared-service users review directly on their host. This is a
 workflow acceptance gate, not automatic verification of a native behavior claim.
+
+## Committed source refresh and citations
+
+Connected repository refresh now captures immutable committed Git blobs and
+publishes a bounded `source-token` index. It reads Git objects directly with
+replacement refs and lazy object fetching disabled; it does not run project code
+or use dirty working-tree bytes as committed evidence. Git must support the
+`--no-lazy-fetch` option (the tested environment uses Git 2.46).
+
+Repository reads expose distinct `source_state`, `evidence_state`, `evidence_head`
+and `evidence_manifest_id` fields. `evidence_state` is current, partial, failed or
+pending. Source refresh, evidence coverage, shared synchronization and forensic
+acceptance are separate states. A failed capture retains the previous good
+manifest instead of relabeling old evidence as the new commit.
+
+Read `/v1/source-manifests?project_id=...` for bounded summaries, then add
+`manifest_id=...` for that commit's file/version mappings and coverage. A citation
+can pin commit ID, original Git blob ID, artifact version and content SHA-256. Old
+private bytes remain available after later commits or deletions. Raw blobs stay in
+the app database and are omitted from portable Git bundles; peers without bytes
+can inspect provenance and the explicit local-availability fields. Imported
+manifest consistency does not independently prove commit membership or native
+behavior on the receiving machine.
+
+A project's manifest UUID defines its main source namespace. Clones retain it;
+independent repositories normally get separate project manifests. Same bytes at
+the same logical source path reuse version identities and, within the same
+extractor configuration, observation identities across commits.
+Only generated source profiles with no authored creator coalesce local first-seen
+`created_at` differences; original incoming timestamps remain in immutable source
+snapshots. Source content, provenance and authored creator differences remain
+conflicts. Unrelated commits therefore do not recreate an unchanged token's hint
+or erase its dismissal.
+
+For matching, use namespace `source-token`, the manifest file's logical `path` as
+`scope_key`, and the exact case-sensitive `identifier`. These are Unicode
+identifier-shaped spans, including comments and literals, not parsed symbols or
+native meanings. UTF-8 text is scanned; other file bytes are pinned without
+interpretation. Exact byte offsets are authoritative, with line/column convenience
+locators. The extractor configuration records its Unicode version.
+
+Default capture bounds are 500 file entries, 8 MiB per file, 32 MiB total bytes,
+20,000 token spans and 25 seconds; tree metadata also has an 8 MiB read cap.
+Exclusions and bounded count/range summaries describe incomplete coverage. Source
+bytes remain pinned when a token or logical scope exceeds the research API's
+2,000-character index limit, but that lexical omission is explicit. Symlink and
+submodule targets are not followed. Dirty and untracked files remain visible in
+source-change diagnostics and require explicit manual source-version registration
+if they should become research evidence before a commit.
+
+Logical source paths reversibly escape reserved bytes. File details expose
+`display_path` and, when needed, `git_path_hex` containing the exact original Git
+filename bytes. Non-UTF-8 names use `display_path_encoding=escaped-bytes`; do not
+interpret the display representation as an OS pathname or silently replace its
+bytes. Use the logical `path` for index scope and the hex form for exact Git
+provenance. No source field implies automatic forensic acceptance.
+
+Source capture and transfer have separate limits. The current Git/HTTP transport
+accepts 8 MiB single payloads. A measured synthetic 20,000-token capture produced a
+38 MiB canonical portable bundle, so that workload currently remains local and
+sharing reports a size-limit failure rather than partially applying it remotely.
+Chunked transfer is required for the full default capture workload; reducing the
+indexed data is not a substitute for that delivery gate.

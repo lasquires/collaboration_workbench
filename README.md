@@ -46,7 +46,9 @@ This is an actively developed prototype, not a complete release. Independent
 startup, project registration, tasks, evidence indexing, matching hints, documents,
 question editing, and guarded core merge/reversal APIs are implemented.
 
-Automatic Git source refresh is implemented. Optional live-service bearer access,
+Repository refresh pins committed source bytes and publishes bounded Unicode
+identifier-shaped indexes with explicit coverage. Dirty working copies remain
+separate from committed evidence. Optional live-service bearer access,
 TLS startup, project-scoped collaborator credentials and browser sign-in are
 implemented; see [self-hosting](docs/self-hosting.md). Opt-in batched
 [Git sharing and field conflict review](docs/git-sharing.md) are implemented.
@@ -58,7 +60,9 @@ independent repositories through local storage mappings. Authored finding
 revisions and evidence withdrawal APIs preserve semantic lineage and prior hint
 decisions. Evidence-pinned answers support independent review, explicit question
 resolution and automatic review notices when support changes. Project migration, collaboration UI integration and final end-to-end/scale
-acceptance remain open. Doctor reports pending
+acceptance remain open. Large source indexes can also exceed the current 8 MiB
+single-payload Git/HTTP transfer limit; successful local capture does not establish
+shared delivery. Doctor reports pending
 synchronization explicitly. A successful connection is not evidence that research
 has synchronized, and workflow completion never establishes forensic correctness.
 

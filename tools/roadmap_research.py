@@ -15,7 +15,7 @@ OPS = {'register_root', 'bind_root', 'register_artifact', 'register_artifact_ver
        'create_index_run', 'stage_batch', 'publish_run', 'create_question',
        'record_negative_search', 'import_variable_registry', 'revise_question', 'create_finding', 'revise_finding', 'archive_finding', 'restore_finding', 'set_evidence_state','create_answer','review_answer','resolve_question','set_question_state'}
 RESOURCES = {'artifacts', 'artifact-versions', 'index-runs', 'occurrences',
-             'observations', 'questions', 'negative-searches', 'findings', 'finding-revisions', 'evidence-links', 'evidence-changes', 'research-review-notices','answers','answer-reviews','question-resolutions'}
+             'observations', 'questions', 'negative-searches', 'findings', 'finding-revisions', 'evidence-links', 'evidence-changes', 'research-review-notices','answers','answer-reviews','question-resolutions','source-manifests'}
 
 
 def canonical(value):
@@ -492,6 +492,12 @@ def read(db,resource,project,*,limit=None,cursor=None,**unused):
         from . import workspace_answers
     except ImportError:
         import workspace_answers
+    if resource=='source-manifests':
+        try:
+            from . import workspace_source_index
+        except ImportError:
+            import workspace_source_index
+        return workspace_source_index.read(db,project,limit=limit,cursor=cursor,**unused)
     if resource in workspace_answers.RESOURCES:return workspace_answers.read(db,resource,project,limit=limit,cursor=cursor,**unused)
     if resource in workspace_findings.RESOURCES:return workspace_findings.read(db,resource,project,limit=limit,cursor=cursor,**unused)
     coverage=_coverage(db,project)

@@ -25,7 +25,7 @@ def _run(root: Path, *args: str, timeout: float = MAX_COMMAND_SECONDS,
     remaining = timeout if deadline is None else min(timeout, deadline - time.monotonic())
     if remaining <= 0:
         raise GitWatchError("overall scan deadline exceeded")
-    argv = ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.external=",
+    argv = ["git", "--no-replace-objects", "--no-lazy-fetch", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.external=",
             "-C", str(root), *args]
     captured = [bytearray(), bytearray()]
     overflow = [False, False]
@@ -68,7 +68,8 @@ def _run(root: Path, *args: str, timeout: float = MAX_COMMAND_SECONDS,
 
 def _git_path(root: Path, value: bytes) -> str:
     # Git quotes unusual paths unless core.quotePath is disabled; -z avoids it.
-    return os.fsdecode(value)
+    try:return value.decode("utf-8")
+    except UnicodeDecodeError:return "[Git path bytes "+value.hex()+"]"
 
 
 def _safe_file(root: Path, rel: str, max_file_bytes: int, deadline: float) -> dict:
@@ -180,7 +181,11 @@ def snapshot_repository(root, max_file_bytes=64 * 1024 * 1024, *,
         deleted = "D" in xy
         meta = {"path": path, "status": xy, "kind": "deleted" if deleted else ("untracked" if xy == "??" else "changed")}
         if not deleted:
-            meta["working"] = _safe_file(top, path, max_file_bytes, deadline)
+            try:raw_path.decode("utf-8")
+            except UnicodeDecodeError:
+                meta["path_bytes_hex"]=raw_path.hex()
+                meta["working"]={"availability":"unavailable","error":"non_utf8_worktree_path"}
+            else:meta["working"] = _safe_file(top, path, max_file_bytes, deadline)
         entries.append(meta)
     entries.sort(key=lambda e: os.fsencode(e["path"]))
     incomplete = status_truncated or bool(index_error) or time.monotonic() >= deadline or any(
@@ -217,7 +222,7 @@ def compare_snapshots(previous: dict, current: dict) -> dict:
             else:
                 args=("ls-tree", "-r", "--name-only", "-z", current.get("head") or previous["head"])
             raw = _run(Path(current["root"]), *args, output_limit=MAX_STATUS_BYTES)
-            changed_set.update(os.fsdecode(part) for part in raw.split(b"\0") if part)
+            changed_set.update(_git_path(Path(current["root"]),part) for part in raw.split(b"\0") if part)
         except (GitWatchError, OSError) as exc:
             errors.append(f"committed_diff_unavailable:{exc}")
     changed = sorted(changed_set, key=os.fsencode)
