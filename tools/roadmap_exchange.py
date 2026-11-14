@@ -16,8 +16,8 @@ except ImportError:
 
 OPS = {'register_exchange_snapshot', 'import_bundle'}
 RESOURCES = {'exchange'}
-TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices'.split())
-IMMUTABLE = set('principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices'.split())
+TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_answer_selections question_resolution_events'.split())
+IMMUTABLE = set('answers principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_resolution_events'.split())
 # Only mutable relationships have row-removal semantics. Evidence/history rows
 # remain append-only; unknown-base omissions never establish a deletion.
 PRESENCE_TABLES = {'task_links'}
@@ -180,7 +180,7 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
 
 def _compatible_schema(db,schema):
     current=_schema(db)
-    return (set(current)-set(schema)<={'task_journal_entries','merge_compensations','finding_revision_lineage','evidence_change_events','research_review_notices'}
+    return (set(current)-set(schema)<={'task_journal_entries','merge_compensations','finding_revision_lineage','evidence_change_events','research_review_notices','answer_contexts','answer_reviews','question_answer_selections','question_resolution_events'}
             and not set(schema)-set(current) and all(schema[key]==current[key] for key in schema))
 
 
@@ -275,6 +275,11 @@ def _validate(db, project, bundle):
     except ImportError:
         import workspace_findings
     workspace_findings.validate_bundle(db,project,bundle['records'])
+    try:
+        from . import workspace_answers
+    except ImportError:
+        import workspace_answers
+    workspace_answers.validate_bundle(project,bundle['records'])
     validations={r['id']:r for r in bundle['records']['validation_records']}
     task_namespace.validate_tasks(db,project,bundle['records']['tasks'])
     for row in bundle['records']['tasks']:
@@ -551,6 +556,12 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
         except ImportError:
             import workspace_findings
         workspace_findings.after_import(db,project,principal,request_id,preview)
+        try:
+            from . import workspace_answers
+        except ImportError:
+            import workspace_answers
+        workspace_answers.reconcile(db,project,principal,request_id)
+        workspace_concurrency.preserve_local_revisions(db,heads_before)
         research_event={'bundle_id':bundle['id'],'choices':choices,'alternatives':preview}
         try:
             from . import roadmap_documents

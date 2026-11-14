@@ -61,6 +61,31 @@ class SharedHttpTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
 
+    def test_answer_acceptance_requires_independent_authorized_http_reviewer(self):
+        with self.store._connection() as db:owner=auth.authenticate(db,self.owner_token)['principal_id']
+        def write(actor,token,*ops):
+            payload={'project_id':self.project,'actor':{'principal_id':actor},'request_id':str(__import__('uuid').uuid4()),'expected_revision':self.store.snapshot()['revision'],'operations':list(ops)}
+            return self.request('/v1/transactions',token,payload)
+        source=Path(self.temp.name)/'answer-source.txt';source.write_text('Synthetic exact source',encoding='utf-8')
+        for op in ({'op':'register_root','id':'answer-root','path':self.temp.name},{'op':'register_artifact','id':'answer-artifact','root_id':'answer-root','relative_path':source.name,'kind':'source'},{'op':'register_artifact_version','artifact_id':'answer-artifact'}):
+            code,result=write(owner,self.owner_token,op);self.assertEqual(code,200,result)
+        version=result['changed_records'][0]['id']
+        code,result=write(self.member_id,self.member_token,{'op':'create_question','id':'answer-q','text':'What does the synthetic source show?'})
+        self.assertEqual(code,200,result)
+        question=self.store.read_v1('questions',self.project)['items'][0]
+        code,result=write(self.member_id,self.member_token,{'op':'create_answer','question_id':'answer-q','expected_question_revision':question['record_revision'],'claim':'The source contains a synthetic witness','evidence':[{'artifact_version_id':version,'locator':{'line':1},'method':'Read pinned bytes','limitations':'No native behavior assertion'}]})
+        self.assertEqual(code,200,result);answer=result['changed_records'][0]['id']
+        review={'op':'review_answer','answer_id':answer,'expected_question_revision':question['record_revision'],'outcome':'accepted','rationale':'Independently checked the pinned witness','supersedes':[]}
+        self.assertEqual(write(self.member_id,self.member_token,review)[0],403)
+        code,result=write(owner,self.owner_token,review);self.assertEqual(code,200,result)
+        code,result=write(self.member_id,self.member_token,{'op':'resolve_question','question_id':'answer-q','answer_id':answer,'expected_record_revision':question['record_revision'],'rationale':'Choose the independently reviewed answer'})
+        self.assertEqual(code,200,result)
+        for resource in ('answers','answer-reviews','question-resolutions'):
+            self.assertEqual(self.request('/v1/'+resource+'?project_id='+self.project)[0],401)
+            self.assertEqual(self.request('/v1/'+resource+'?project_id='+self.project,self.member_token)[0],200)
+            self.assertEqual(self.request('/v1/'+resource+'?project_id='+self.other,self.member_token)[0],403)
+        self.assertEqual(self.request('/v1/questions?project_id='+self.project,self.member_token)[1]['items'][0]['state'],'resolved')
+
     def test_authenticated_finding_lifecycle_reads_are_project_scoped(self):
         body={'project_id':self.project,'actor':{'principal_id':self.member_id},'request_id':'http-authored-finding','expected_revision':self.store.snapshot()['revision'],'operations':[{'op':'create_finding','id':'http-finding','claim':'An explicitly unsupported research hypothesis','scope':{},'classification':'hypothesis','uncertainty':'No source support yet','evidence':[]}]}
         code,result=self.request('/v1/transactions',self.member_token,body)

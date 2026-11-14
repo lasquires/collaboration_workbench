@@ -216,7 +216,7 @@ def workspace_read(parsed):
         if set(options)-{'ancestor_id','portable'}:
             raise RoadmapError(400,'Unsupported exchange export parameter')
         return _store().exchange_preview(project_id,ancestor_id=options.get('ancestor_id'),portable=options.get('portable',False))
-    if len(path)==2 and path[1] in {'finding-revisions','evidence-links','evidence-changes','research-review-notices'}:
+    if len(path)==2 and path[1] in {'finding-revisions','evidence-links','evidence-changes','research-review-notices','answers','answer-reviews','question-resolutions'}:
         if set(options)-{'subject_type','subject_id','limit','cursor'}:raise RoadmapError(400,'Unsupported finding history parameter')
         return _store().read_v1(path[1],project_id,**options)
     if path==['v1','merge-compensations']:
@@ -364,7 +364,7 @@ class Handler(BaseHTTPRequestHandler):
             if any(isinstance(op, dict) and op.get('op') in owner_ops for op in operations) and not principal['is_owner']:
                 raise RoadmapError(403, 'Host filesystem access requires owner credential')
             required = {'contribute'}
-            if any(isinstance(op, dict) and op.get('op') in {'record_validation', 'complete_task', 'approve_guidance'} for op in operations):
+            if any(isinstance(op, dict) and op.get('op') in {'record_validation', 'complete_task', 'approve_guidance', 'review_answer'} for op in operations):
                 required.add('review')
             if any(isinstance(op, dict) and op.get('op') in {'handoff_claim'} for op in operations):
                 required.add('manage_claims')
@@ -627,7 +627,7 @@ def checkpoint_before_upgrade(path):
         version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return None
-    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
+    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
         raise RoadmapError(503, 'Unsupported task database schema; no migration attempted')
     from migrate_roadmap import backup_database
     def file_hash(target):

@@ -132,5 +132,46 @@ immutable evidence history and project review notices without reviving old sourc
 links. Reads: `/v1/evidence-changes` and `/v1/research-review-notices`.
 
 Finding publication and imports queue durable local matching; publication alone
-does not resolve a question. Evidence-gated answer proposals, independent review
-and resolution remain a separate lifecycle gate while that API is unfinished.
+does not resolve a question. Use the explicit answer workflow below.
+
+## Propose, review and select an answer
+
+`create_answer` requires `question_id`, `expected_question_revision`, `claim`,
+and 1–100 pinned sources. Supply `evidence_link_ids` from available source support
+or direct `evidence` descriptors using the same version/locator/method/limitations
+shape as findings. A proposal freezes the question requirements and source digest;
+propose an alternative instead of editing its prior claim.
+
+An independent project principal with current `contribute` and `review` capability
+uses `review_answer` with `answer_id`, `expected_question_revision`, `outcome`
+(`accepted` or `rejected`) and `rationale`. Optional `supersedes` names only that
+reviewer's earlier decisions on this answer. Contradictory review heads remain
+disputed; clocks do not choose a winner. Authentication and current capability
+are checked again for exact request replays.
+
+`resolve_question` explicitly selects an `answer_id` and requires the question's
+`expected_record_revision` plus `rationale`. It requires fresh independently
+accepted support. `set_question_state` reopens or withdraws with `state` equal to
+`open`, `investigating` or `withdrawn`; it cannot bypass resolution by selecting
+`resolved`. All four answer/question operations support explicit record mode
+using the affected `question` guard.
+
+Read `/v1/answers?project_id=...&subject_id=<question-id>`,
+`/v1/answer-reviews?project_id=...&subject_id=<answer-id>` and
+`/v1/question-resolutions?project_id=...&subject_id=<question-id>`. These lists
+have bounded pages and revision/filter-bound cursors. A question read includes
+its recorded state, effective state, selection and review concerns.
+
+Source withdrawal, changed supporting finding semantics or changed question
+requirements invalidates affected selections while retaining all earlier proposals,
+reviews and resolution events. Editorial finding uncertainty changes preserve
+acceptance. Capability revocation changes effective trust without rewriting the
+shared authored resolution.
+
+Portable Git/live data retains review and resolution history. An imported row is
+not evidence that this service authenticated its claimed reviewer, even if that
+principal has local membership. Local review receipts stay outside exchange. A
+shared resolution remains visible as `recorded_state=resolved` while its effective
+state can require local review; a fresh authorized independent review establishes
+local acceptance. Shared-service users review directly on their host. This is a
+workflow acceptance gate, not automatic verification of a native behavior claim.

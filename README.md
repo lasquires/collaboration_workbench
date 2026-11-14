@@ -56,8 +56,8 @@ edits proceed with scoped revision guards. [Reviewed merge compensation](docs/me
 the scoped API. Project-scoped task imports preserve repeated labels across
 independent repositories through local storage mappings. Authored finding
 revisions and evidence withdrawal APIs preserve semantic lineage and prior hint
-decisions. Evidence-gated answer acceptance,
-project migration, collaboration UI integration and final end-to-end/scale
+decisions. Evidence-pinned answers support independent review, explicit question
+resolution and automatic review notices when support changes. Project migration, collaboration UI integration and final end-to-end/scale
 acceptance remain open. Doctor reports pending
 synchronization explicitly. A successful connection is not evidence that research
 has synchronized, and workflow completion never establishes forensic correctness.

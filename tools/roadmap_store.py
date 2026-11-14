@@ -17,9 +17,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange, workspace_concurrency, workspace_merge_compensation
+    from . import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange, workspace_concurrency, workspace_merge_compensation, workspace_answers
 except ImportError:
-    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange, workspace_concurrency, workspace_merge_compensation
+    import roadmap_schema, roadmap_projection, roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_projects, roadmap_exchange, workspace_concurrency, workspace_merge_compensation, workspace_answers
 
 SCHEMA_VERSION = 1
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
@@ -651,7 +651,7 @@ class RoadmapStore:
                     if names & owner_ops and not credential["is_owner"]:
                         raise StoreError(403, "Host filesystem access requires owner credential")
                     required = {"contribute"}
-                    if names & {"record_validation", "complete_task", "approve_guidance"}:
+                    if names & {"record_validation", "complete_task", "approve_guidance", "review_answer"}:
                         required.add("review")
                     if "handoff_claim" in names:
                         required.add("manage_claims")
@@ -664,6 +664,8 @@ class RoadmapStore:
                     membership=db.execute("SELECT m.capabilities_json FROM project_members m JOIN principals p ON p.id=m.principal_id WHERE m.project_id=? AND p.id=? AND p.archived_at IS NULL",(envelope['project_id'],current_actor['principal_id'])).fetchone()
                     if membership is None or 'contribute' not in json.loads(membership[0]):
                         raise StoreError(403,'Principal lacks current project contribution')
+                    if any(op.get('op')=='review_answer' for op in operations) and 'review' not in json.loads(membership[0]):
+                        raise StoreError(403,'Current independent review capability required')
                     if current_actor.get('session_id') is not None and not db.execute('SELECT 1 FROM agent_sessions WHERE id=? AND principal_id=?',(current_actor['session_id'],current_actor['principal_id'])).fetchone():
                         raise StoreError(403,'Session does not belong to current principal')
                 prior = db.execute("SELECT * FROM transactions WHERE request_id=?", (request_id,)).fetchone()
@@ -790,6 +792,7 @@ class RoadmapStore:
                     if old and row['revision']==old['revision'] and (row['uid'] in task_state_ids or row['id'] in task_state_legacy or any(row[field]!=old[field] for field in ('gate_revision','acceptance_state','validation_id','decomposition_complete','area_id','structure_revision','archived_at'))):
                         db.execute('UPDATE tasks SET revision=revision+1 WHERE uid=?',(row['uid'],))
                 roadmap_structure.sync_legacy_claims(db)
+                if _workspace:workspace_answers.reconcile(db,project,_workspace["payload"]["actor"]["principal_id"],request_id)
                 workspace_concurrency.preserve_local_revisions(db,heads_before)
                 recorded_at = datetime.now(timezone.utc).isoformat()
                 for task_id in set(tasks) - set(before):

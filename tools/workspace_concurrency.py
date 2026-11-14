@@ -7,7 +7,7 @@ except ImportError:
 
 TASK_OPERATIONS={'create','create_task','update','set_parent','archive','journal','add_link','remove_link'}|structure.OPS
 DOCUMENT_OPERATIONS={'create_document','register_document_version','add_comment','propose_edit','accept_proposal','reject_proposal','set_feedback'}
-OPERATIONS=TASK_OPERATIONS|DOCUMENT_OPERATIONS|{'create_question','revise_question','create_finding','revise_finding','archive_finding','restore_finding'}
+OPERATIONS=TASK_OPERATIONS|DOCUMENT_OPERATIONS|{'create_question','revise_question','create_finding','revise_finding','archive_finding','restore_finding','create_answer','review_answer','resolve_question','set_question_state'}
 TABLES={'project':'projects','area':'areas','question':'questions','document':'documents','proposal':'edit_proposals','finding':'findings'}
 TYPES={'task','task_structure','feedback'}|set(TABLES)
 
@@ -127,6 +127,9 @@ def check_records(db,payload,operations):
             if isinstance(scope,dict):
                 if scope.get('task_id'):task(scope['task_id'])
                 if scope.get('area_id'):scoped('area',scope['area_id'])
+        elif name in ('create_answer','resolve_question','set_question_state'):scoped('question',operation.get('question_id'))
+        elif name=='review_answer':
+            answer=research.scoped(db,'answers',project,operation.get('answer_id'));scoped('question',answer['question_id'])
         elif name=='revise_question':scoped('question',operation.get('question_id'))
         elif name=='create_question':
             if operation.get('owner_task_id'):task(operation['owner_task_id'])
