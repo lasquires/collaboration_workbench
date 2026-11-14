@@ -114,6 +114,44 @@ class PortableExchangeTests(unittest.TestCase):
         with self.assertRaisesRegex(StoreError,'host path'):
             self.export(0)
 
+    def test_imported_portable_history_survives_host_reexport_without_import_churn(self):
+        source=self.stores[1]
+        source.transact_v1({'project_id':self.project,'actor':{'principal_id':self.actors[1]},'request_id':'question-history','expected_revision':source.snapshot()['revision'],'operations':[{'op':'create_question','id':'history-question','text':'Retain this source event'}]})
+        incoming=self.export(1);self.assertTrue(incoming['history'])
+        self.apply(0,incoming,'history-import')
+        exported=self.export(0)
+        self.assertEqual(exported['history'],incoming['history'],'host reexport preserves original event digests and excludes its local import audit')
+        self.assertEqual(exported,self.export(0))
+
+    def test_schema7_upgrade_backfills_only_applied_portable_history(self):
+        import sys
+        import sqlite3
+        from contextlib import closing
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
+        import roadmap_server
+        source=self.stores[1]
+        source.transact_v1({'project_id':self.project,'actor':{'principal_id':self.actors[1]},'request_id':'migration-history','expected_revision':source.snapshot()['revision'],'operations':[{'op':'create_question','id':'migrated-question','text':'Keep imported provenance'}]})
+        incoming=self.export(1)
+        old_audit={**incoming['history'][0],'id':'old-transport-audit','kind':'import_bundle'}
+        incoming['history'].append(old_audit)
+        incoming['id']=exchange.research.digest({key:value for key,value in incoming.items() if key!='id'})
+        self.apply(0,incoming,'old-import')
+        path=self.stores[0].path
+        with self.stores[0]._connection() as db:
+            db.execute('DROP TABLE portable_event_history')
+            db.execute('UPDATE store_meta SET schema_version=7')
+        with roadmap_server.service_lock(path):
+            checkpoint=roadmap_server.checkpoint_before_upgrade(path)
+            upgraded=RoadmapStore(path)
+        with closing(sqlite3.connect(checkpoint)) as backup:
+            self.assertEqual(backup.execute('SELECT schema_version FROM store_meta').fetchone()[0],7)
+            self.assertEqual(backup.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+        with upgraded._connection() as db:
+            exported=exchange.export_bundle(db,self.project,portable=True)
+            saved=json.loads(db.execute('SELECT bundle_json FROM exchange_snapshots WHERE project_id=? AND id=?',(self.project,incoming['id'])).fetchone()[0])
+            self.assertIn(old_audit,saved['history'],'raw original snapshot remains unchanged')
+        self.assertEqual({event['id'] for event in exported['history']},{incoming['history'][0]['id']})
+
     def test_portable_snapshot_is_deterministic_and_conflict_is_explicit(self):
         for store in self.stores:
             with store._connection() as db: db.execute("INSERT INTO areas(id,project_id,title) VALUES('area',?,'Original')",(self.project,))

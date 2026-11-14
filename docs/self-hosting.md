@@ -59,10 +59,42 @@ Project mutations must use the credential's principal ID, returned by that
 project's capabilities endpoint, and the current revision. Owner-only repository
 setup uses an in-process credential-bound service adapter.
 
+## Connect a local app to the host
+
+The backend supports a private, project-scoped live connection. Configure it through
+`POST /v1/live-configure` with `project_id`, `enabled: true`, the host `url`, and a
+`token_file` path on the local app computer. Keep that file outside every connected
+repository and the application repository. The response omits the credential path
+and secret. HTTPS is required except for loopback development hosts.
+
+Review `POST /v1/live-join-preview`, then submit its exact review descriptor and
+explicit conflict choices to `POST /v1/live-join`. A changed local revision or host
+snapshot requires a fresh review. Do not manufacture a replacement review payload.
+The service worker then exchanges portable records automatically. Requests whose
+responses were lost retain their original identities and are replayed after restart.
+
+`GET /v1/live-status?project_id=<uuid>` reports the connection state and preferred
+transport. `POST /v1/live-sync` requests reconciliation. Conflicts use
+`POST /v1/live-review` and `/v1/live-resolve`, with `side` set to `host` or `local`;
+resolve requires the exact returned review plus explicit field choices. In shared
+mode, configuring these filesystem-backed connections requires the local service
+owner. A guest credential cannot use the owner's upstream credentials.
+
+While the live connection is available, automatic Git sharing reports
+`live-standby`. When the host becomes unavailable, enabled Git sharing resumes its
+normal quiet period and network interval. Reconnecting reconciles the queued local
+records with the host. Disabling live access retains pending operations for recovery.
+An explicit Git Sync now remains available.
+
 ## Current boundaries
 
-Live HTTP authorization and TLS are implemented and tested. Local source
-tracking and portable Git merge are separate operations. Automatic switching
-between a live host and an offline client, reconnecting queued edits, and the
-complete shared-sync UI still have their own acceptance checks; enabling the
-listener does not establish those checks have passed.
+Authenticated live reconciliation, restart recovery, and automatic Git fallback
+have integration coverage using independent stores and a real stopped/restarted
+HTTP host. The browser controls for configuring and reviewing live connections
+are still being completed.
+
+Local-client claims remain **local-only**. Snapshot exchange does not create an
+acknowledged host lease. Use the host directly for shared claim coordination until
+lease relay is implemented. Portable event metadata preserves attribution and
+payload digests; full progress-journal text sharing is a separate unfinished gate.
+Enabling a listener or completing synchronization never verifies research claims.

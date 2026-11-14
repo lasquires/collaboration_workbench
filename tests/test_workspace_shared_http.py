@@ -168,6 +168,27 @@ class SharedHttpTests(unittest.TestCase):
         finally:
             http.shutdown();http.server_close();thread.join()
 
+    def test_scoped_portable_export_is_versioned_and_excludes_credentials(self):
+        status,result=self.request('/v1/exchange-export?project_id='+self.project+'&portable=true',self.member_token)
+        self.assertEqual(status,200,result)
+        self.assertEqual(result['bundle']['format'],'workbench-exchange')
+        self.assertEqual(result['bundle']['version'],2)
+        self.assertNotIn(self.member_token,json.dumps(result))
+        status,legacy=self.request('/v1/exchange-export?project_id='+self.project,self.member_token)
+        self.assertEqual(status,200)
+        self.assertEqual(legacy['bundle']['format'],'ssg2-exchange')
+        self.assertEqual(self.request('/v1/exchange-export?project_id='+self.project+'&portable=1',self.member_token)[0],400)
+
+    def test_live_connection_controls_are_owner_scoped_and_status_is_project_scoped(self):
+        payload={'project_id':self.project,'enabled':False}
+        self.assertEqual(self.request('/v1/live-configure',self.member_token,payload)[0],403)
+        status,result=self.request('/v1/live-configure',self.owner_token,payload)
+        self.assertEqual(status,200,result);self.assertFalse(result['enabled'])
+        status,result=self.request('/v1/live-status?project_id='+self.project,self.member_token)
+        self.assertEqual(status,200,result);self.assertEqual(result['claim_scope'],'local-only')
+        self.assertEqual(self.request('/v1/live-status?project_id='+self.other,self.member_token)[0],403)
+        self.assertEqual(self.request('/v1/live-join',self.owner_token,{'project_id':self.project,'review':{},'choices':{}})[0],400)
+
     def test_public_host_is_explicit_and_validated(self):
         hosts=server.accepted_service_hosts('0.0.0.0',8771,'workbench.example:443')
         self.assertIn('workbench.example:443',hosts)

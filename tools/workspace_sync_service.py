@@ -73,7 +73,7 @@ class WorkspaceSyncService:
             if temporary and os.path.exists(temporary):os.unlink(temporary)
         # Runtime status is local connection metadata, not shared task progress.
         with self.store._connection() as db:
-            db.execute('UPDATE repository_connections SET sync_state=? WHERE project_id=? AND id=?',(state['state'],project,identity))
+            db.execute('UPDATE repository_connections SET sync_state=? WHERE project_id=? AND id=?',('live-standby' if state.get('standby_live') and state['enabled'] else state['state'],project,identity))
 
     def _binding(self,project,identity):
         connection=self._connection(project,identity);root=Path(connection['root']).resolve()
@@ -112,19 +112,22 @@ class WorkspaceSyncService:
                 _,binding,ref,interval,quiet=self._binding(project,identity)
                 state.update(binding=binding,data_ref=ref,interval_seconds=interval,quiet_seconds=quiet)
             state.update(enabled=enabled,export_selected=export_selected if enabled else False,
-                         requested=False,state='pending' if enabled else 'off',error=None,retry_after=0)
+                         requested=False,state='pending' if enabled else 'off',error=None,retry_after=0,standby_live=False)
             self._save(project,identity,state)
         return self.read(project,identity)
 
     def read(self,project,identity):
         self._connection(project,identity);state=self._load(project,identity)
-        return {key:value for key,value in state.items() if key not in ('binding','observed')}
+        result={key:value for key,value in state.items() if key not in ('binding','observed')}
+        result['git_state']=state['state']
+        if state['enabled'] and state.get('standby_live'):result['state']='live-standby'
+        return result
 
     def request_sync(self,project,identity):
         with self._locked(project,identity):
             state=self._load(project,identity)
             if not state['enabled']:raise StoreError(409,'Enable this project Git sharing first')
-            state.update(requested=True,state='queued',retry_after=0,error=None)
+            state.update(requested=True,state='queued',retry_after=0,error=None,standby_live=False)
             self._save(project,identity,state)
         return self.read(project,identity)
 
@@ -143,7 +146,7 @@ class WorkspaceSyncService:
             self._save(project,identity,state)
         return self.read(project,identity)
 
-    def tick(self,now=None):
+    def tick(self,now=None,*,skip_projects=()):
         now=time.time() if now is None else now
         with self.store._connection() as db:
             connections=[dict(row) for row in db.execute('SELECT project_id,id FROM repository_connections')]
@@ -152,6 +155,12 @@ class WorkspaceSyncService:
             try:
                 with self._locked(project,identity):
                     state=self._load(project,identity)
+                    if project in skip_projects and state['enabled'] and not state['requested']:
+                        if not state.get('standby_live'):
+                            state['standby_live']=True;self._save(project,identity,state)
+                        continue
+                    if state.get('standby_live'):
+                        state['standby_live']=False;self._save(project,identity,state)
                     if not state['enabled'] or (state['state']=='review-required' and not state['requested']) or now<state.get('retry_after',0):continue
                     try:
                         engine=self._engine(project,identity,state)

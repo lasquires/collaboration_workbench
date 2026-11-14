@@ -21,6 +21,9 @@ from roadmap_store import RoadmapStore, StoreError
 from roadmap_schema import SCHEMA_VERSION
 import workspace_auth
 from workspace_sync_service import WorkspaceSyncService
+from workspace_live_service import WorkspaceLiveService
+from workspace_live_client import LiveConflict
+from roadmap_cli import ApiError as LiveApiError
 from workspace_sync import SyncConflict,PrivacyBlocked
 from workspace_git_transport import TransportError
 
@@ -163,7 +166,7 @@ def transact(payload: object) -> dict:
 def workspace_read(parsed):
     """Strict versioned read adapter; project selection is never implicit."""
     params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
-    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id", "merge_id", "repository_id"}
+    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id", "merge_id", "repository_id", "portable"}
     if set(params) - allowed or any(len(values) != 1 for values in params.values()):
         raise RoadmapError(400, "Unknown or duplicate workspace parameter")
     values = {key: item[0] for key, item in params.items()}
@@ -175,6 +178,9 @@ def workspace_read(parsed):
             if not value.isascii() or not value.isdigit():
                 raise RoadmapError(400, "Invalid integer workspace parameter")
             value = int(value)
+        if key=='portable':
+            if value not in ('true','false'):raise RoadmapError(400,'Portable export option must be true or false')
+            value=value=='true'
         options[key] = value
     if path == ["v1", "projects"]:
         if params:
@@ -183,7 +189,11 @@ def workspace_read(parsed):
     if len(path) == 4 and path[1] == "projects" and path[3] == "capabilities":
         if params:
             raise RoadmapError(400, "Capabilities project is selected by path")
-        return _store().read_v1("capabilities", urllib.parse.unquote(path[2]))
+        project=urllib.parse.unquote(path[2]);store=_store();result=store.read_v1('capabilities',project)
+        live=WorkspaceLiveService(store).read(project)
+        result['capabilities']['claim_scope']='local-only' if live['enabled'] else 'this-service'
+        result['capabilities']['upstream_data_sync']=live['enabled']
+        return result
     if path == ['v1','tasks','merge-reversal-preview']:
         if set(options)!={'merge_id'}:
             raise RoadmapError(400,'Merge reversal preview requires merge_id')
@@ -192,13 +202,16 @@ def workspace_read(parsed):
         if set(options)!={'survivor_id','absorbed_id'}:
             raise RoadmapError(400,'Merge preview requires survivor_id and absorbed_id')
         return _store().merge_preview(project_id,options['survivor_id'],options['absorbed_id'])
+    if path==['v1','live-status']:
+        if options:raise RoadmapError(400,'Live status accepts only project_id')
+        return WorkspaceLiveService(_store()).read(project_id)
     if path==['v1','git-sync-status']:
         if set(options)!={'repository_id'}:raise RoadmapError(400,'Git status requires repository_id')
         return WorkspaceSyncService(_store()).read(project_id,options['repository_id'])
     if path == ['v1','exchange-export']:
-        if set(options)-{'ancestor_id'}:
+        if set(options)-{'ancestor_id','portable'}:
             raise RoadmapError(400,'Unsupported exchange export parameter')
-        return _store().exchange_preview(project_id,ancestor_id=options.get('ancestor_id'))
+        return _store().exchange_preview(project_id,ancestor_id=options.get('ancestor_id'),portable=options.get('portable',False))
     if len(path)==2 and path[1] in {'attempts','validations','blockers','claims'}:
         if set(options)-{'task_id','limit','cursor','order','state'}:
             raise RoadmapError(400,'Unsupported collaboration read parameter')
@@ -322,8 +335,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise RoadmapError(403, 'Host filesystem access requires owner credential')
             return
         self._scope(principal, payload.get('project_id'))
-        if parsed.path.startswith('/v1/git-sync-') and not principal['is_owner']:
-            raise RoadmapError(403,'Host Git operations require owner credential')
+        if (parsed.path.startswith('/v1/git-sync-') or parsed.path.startswith('/v1/live-')) and not principal['is_owner']:
+            raise RoadmapError(403,'Host connection operations require owner credential')
         if parsed.path == '/v1/repository-refresh':
             if not principal['is_owner']:
                 raise RoadmapError(403, 'Host filesystem access requires owner credential')
@@ -473,7 +486,25 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._body()
             if principal is not None:
                 self._shared_write(parsed, payload, principal)
-            if parsed.path.startswith('/v1/git-sync-') and not parsed.query:
+            if parsed.path.startswith('/v1/live-') and not parsed.query:
+                action=parsed.path.removeprefix('/v1/live-')
+                extra={'configure':{'enabled'},'join-preview':set(),'join':{'review','choices'},'sync':set(),'review':{'side'},'resolve':{'side','review','choices'}}
+                if action not in extra or not isinstance(payload,dict):raise RoadmapError(400,'Invalid live connection action')
+                required={'project_id'}|extra[action];allowed=required|({'url','token_file'} if action=='configure' else set())
+                if not required<=set(payload) or set(payload)-allowed:raise RoadmapError(400,'Invalid live connection request')
+                project=payload['project_id'];service=WorkspaceLiveService(_store())
+                try:
+                    if action=='configure':result=service.configure(project,enabled=payload['enabled'],url=payload.get('url'),token_file=payload.get('token_file'))
+                    elif action=='join-preview':result=service.preview_join(project)
+                    elif action=='join':result=service.join(project,payload['review'],payload['choices'])
+                    elif action=='sync':result=service.sync_now(project)
+                    elif action=='review':result=service.review(project,payload['side'])
+                    else:result=service.resolve(project,payload['side'],payload['review'],payload['choices'])
+                except LiveConflict as error:
+                    self._json(409,{'error':'Live reconciliation needs a fresh explicit review','code':'live_conflict','alternatives':error.alternatives});return
+                except LiveApiError:
+                    raise RoadmapError(503,'Live host request was not confirmed; pending work is retained') from None
+            elif parsed.path.startswith('/v1/git-sync-') and not parsed.query:
                 base={'project_id','repository_id'}
                 extra={'configure':{'enabled','export_selected'},'now':set(),'preview':set(),
                        'apply':{'choices','remote_tip','bundle_id','expected_revision'}}
@@ -583,7 +614,7 @@ def checkpoint_before_upgrade(path):
         version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return None
-    if version not in (1, 2, 3, 4, 5, 6):
+    if version not in (1, 2, 3, 4, 5, 6, 7):
         raise RoadmapError(503, 'Unsupported task database schema; no migration attempted')
     from migrate_roadmap import backup_database
     def file_hash(target):
@@ -647,9 +678,11 @@ def start_repository_worker(path, interval=2.0):
 def start_git_sync_worker(path,interval=2.0):
     stop=threading.Event()
     def consume():
-        service=WorkspaceSyncService(RoadmapStore(path))
+        store=RoadmapStore(path);service=WorkspaceSyncService(store);live=WorkspaceLiveService(store)
         while not stop.is_set():
-            try:service.tick()
+            try:
+                available=live.tick()
+                service.tick(skip_projects=available)
             except (StoreError,OSError,ValueError):print('Git sharing worker will retry',flush=True)
             stop.wait(interval)
     worker=threading.Thread(target=consume,name='git-sharing',daemon=True);worker.start()

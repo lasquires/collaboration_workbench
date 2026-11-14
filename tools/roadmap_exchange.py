@@ -39,12 +39,31 @@ def _portable_path_check(value, known_roots):
 
 
 
+def _retain_portable_history(db,project,events):
+    for event in events:
+        if not isinstance(event,dict) or set(event)!=_PORTABLE_HISTORY or event['project_id']!=project:
+            research.error(409,'Portable history metadata is incompatible')
+        if event['kind']=='import_bundle':continue
+        body=canonical(event)
+        existing=db.execute('SELECT body_json FROM portable_event_history WHERE project_id=? AND id=?',(project,event['id'])).fetchone()
+        if existing and existing[0]!=body:research.error(409,'Immutable portable history identity collision')
+        db.execute('INSERT OR IGNORE INTO portable_event_history VALUES(?,?,?)',(project,event['id'],body))
+
+
 def create_schema(db):
     db.execute('CREATE TABLE IF NOT EXISTS exchange_snapshots(project_id TEXT NOT NULL REFERENCES projects(id),id TEXT NOT NULL,bundle_json TEXT NOT NULL,PRIMARY KEY(project_id,id))')
     db.execute('CREATE TABLE IF NOT EXISTS exchange_imports(project_id TEXT NOT NULL REFERENCES projects(id),id TEXT NOT NULL,result_json TEXT NOT NULL,PRIMARY KEY(project_id,id))')
-    for table in ('exchange_snapshots', 'exchange_imports'):
+    db.execute('CREATE TABLE IF NOT EXISTS portable_event_history(project_id TEXT NOT NULL REFERENCES projects(id),id TEXT NOT NULL,body_json TEXT NOT NULL,PRIMARY KEY(project_id,id))')
+    for table in ('exchange_snapshots', 'exchange_imports','portable_event_history'):
         for action in ('UPDATE', 'DELETE'):
             db.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_{action.lower()} BEFORE {action} ON {table} BEGIN SELECT RAISE(ABORT,'exchange history is immutable'); END")
+    # Upgrade previously applied v2 snapshots without inventing local event rows.
+    for row in db.execute('SELECT s.project_id,s.bundle_json FROM exchange_snapshots s JOIN exchange_imports i ON i.project_id=s.project_id AND i.id=s.id'):
+        bundle=json.loads(row[1])
+        if (bundle.get('format'),bundle.get('version'))==(_PORTABLE_FORMAT,2):
+            _validate(db,row[0],bundle)
+            _retain_portable_history(db,row[0],bundle['history'])
+
 
 
 def _schema(db):
@@ -92,10 +111,15 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False):
     for event in history:
         event.pop('sequence',None)
     if portable:
-        history = [event for event in history if event['kind'] not in {'bind_root','hydrate_artifact_version','repository_snapshot','register_repository'}]
+        history = [event for event in history if event['kind'] not in {'bind_root','hydrate_artifact_version','repository_snapshot','register_repository','import_bundle'}]
         history = [{**{key:event[key] for key in _PORTABLE_HISTORY - {'payload_sha256'}},
                     'payload_sha256':research.digest({key:event.get(key) for key in ('before_json','after_json','rationale')})}
                    for event in history]
+        retained={row['id']:json.loads(row['body_json']) for row in db.execute('SELECT id,body_json FROM portable_event_history WHERE project_id=?',(project_id,))}
+        for event in history:
+            if event['id'] in retained and retained[event['id']]!=event:research.error(409,'Immutable portable history identity collision')
+            retained[event['id']]=event
+        history=[retained[key] for key in sorted(retained)]
     contributors={r.get('created_by') for records in rows.values() for r in records}
     contributors.update(r.get('reviewer_id') for records in rows.values() for r in records)
     contributors.update(e.get('actor_id') for e in history)
@@ -386,6 +410,7 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
         # resulting accepted state, rather than trusting either side in isolation.
         invalid=db.execute("SELECT 1 FROM tasks t LEFT JOIN validation_records v ON v.project_id=t.project_id AND v.id=t.validation_id WHERE t.project_id=? AND t.acceptance_state='passed' AND (v.id IS NULL OR v.task_id<>t.uid OR v.outcome<>'passed' OR v.gate_revision<>t.gate_revision)",(project,)).fetchone()
         if invalid: research.error(409,'Merged accepted task lacks its matching validation gate')
+        if (bundle['format'],bundle['version'])==(_PORTABLE_FORMAT,2):_retain_portable_history(db,project,bundle['history'])
         result={'type':'exchange_import','id':bundle['id'],'preview':preview,'choices':choices}
         db.execute('INSERT OR IGNORE INTO exchange_snapshots VALUES(?,?,?)',(project,bundle['id'],canonical(bundle)))
         db.execute('INSERT INTO exchange_imports VALUES(?,?,?)',(project,bundle['id'],canonical(result)))

@@ -7,7 +7,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 FOUNDATION_DDL = [
     "CREATE TABLE projects(id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, goal TEXT NOT NULL DEFAULT '', acceptance_json TEXT NOT NULL DEFAULT '[]', entry_documents_json TEXT NOT NULL DEFAULT '[]', coverage_json TEXT NOT NULL DEFAULT '{}', revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1), created_by TEXT, created_at TEXT, updated_at TEXT, archived_at TEXT)",
@@ -103,7 +103,7 @@ def migrate(db, *, fresh=False, bootstrap_slug="ssg2"):
     version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return
-    if version not in (1, 2, 3, 4, 5, 6):
+    if version not in (1, 2, 3, 4, 5, 6, 7):
         raise ValueError('Unsupported task database schema')
     db.execute('BEGIN IMMEDIATE')
     try:

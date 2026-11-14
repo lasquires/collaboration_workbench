@@ -62,5 +62,6 @@ credential for Git jobs because they use host Git credentials and filesystem sta
 Requests and responses are JSON. Choice keys are canonical JSON arrays of
 `[table, row_key, field]`; values are `local` or `remote`. Never infer a winner
 from timestamps. A remote binding change stops sharing until setup is reviewed.
-Git-only sharing is implemented independently of live/offline service reconnect;
-that automatic reconnect flow remains a separate delivery gate.
+Git-only sharing also serves as fallback for an unavailable configured live host.
+See [live hosting](self-hosting.md) for backend configuration, conflict review,
+and the remaining UI and shared-claim boundaries.

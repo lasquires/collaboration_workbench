@@ -244,6 +244,11 @@ class WorkspaceSyncTests(unittest.TestCase):
 
         with stores[0]._connection() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM areas WHERE project_id=?', (project,)).fetchone()[0], 2)
+        stable_tip=clients[0].transport.fetch().tip
+        for _ in range(2):
+            for client in clients:client.sync_now()
+        self.assertEqual(clients[0].transport.fetch().tip,stable_tip,'converged independent installations must not publish metadata-only churn')
+
     def test_export_is_one_read_snapshot_during_concurrent_write(self):
         from unittest.mock import patch
         store=self.stores[0]

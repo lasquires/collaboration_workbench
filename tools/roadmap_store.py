@@ -500,7 +500,7 @@ class RoadmapStore:
             finally:
                 db.rollback()
 
-    def exchange_preview(self, project_id, bundle=None, ancestor_id=None):
+    def exchange_preview(self, project_id, bundle=None, ancestor_id=None, *, portable=False):
         try:
             from . import roadmap_exchange
         except ImportError:
@@ -512,7 +512,7 @@ class RoadmapStore:
                 envelope={'api_version':roadmap_projection.API_VERSION,'project_id':project_id,
                           'revision':self._revision(self._meta(db))}
                 if bundle is None:
-                    return {**envelope,'bundle':roadmap_exchange.export_bundle(db,project_id,ancestor_id)}
+                    return {**envelope,'bundle':roadmap_exchange.export_bundle(db,project_id,ancestor_id,portable=portable)}
                 return {**envelope,'preview':roadmap_exchange.preview_import(db,project_id,bundle)}
             finally:
                 db.rollback()

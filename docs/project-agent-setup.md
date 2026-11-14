@@ -61,10 +61,16 @@ Never edit SQLite directly, copy live WAL files as a backup, merge database file
 or infer verified software behavior from workflow completion or hints. Preserve
 source hashes, methods and limitations when reporting evidence.
 
-## Current synchronization status
+## Synchronization
 
-Project connection setup is implemented. Automatic Git source refresh and shared
-research import synchronization are still being completed. Doctor reports
-`pending` and an explicit next action instead of claiming synchronization is ready.
-Use the existing read-only exchange export/preview commands for inspection; do
-not treat a successful connection as proof of synchronized research.
+Project setup and automatic Git source refresh are implemented. Enable portable
+[Git sharing](git-sharing.md) explicitly for each connected project. Optional
+[live hosting](self-hosting.md) supports authenticated reconciliation and Git
+fallback; its configuration/review APIs are available before the complete browser
+controls. Check connection status and resolve conflicts through reviewed previews.
+A successful repository connection alone does not establish synchronized research.
+
+Snapshot synchronization does not transfer active claims as shared leases. Local
+clients report local-only claims; use the host directly for shared coordination.
+Full journal text sharing remains under development, even when portable event
+metadata and record synchronization report current.

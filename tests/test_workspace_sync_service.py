@@ -64,3 +64,14 @@ class SyncServiceTests(unittest.TestCase):
         self.assertEqual(payload['records']['questions'],[],'quiet period does not push each local edit')
         self.service.tick(now=1301)
         self.assertEqual(self.service.read(self.project,self.repo_id)['state'],'current')
+
+    def test_live_host_standby_and_automatic_git_fallback(self):
+        self.service.configure(self.project,self.repo_id,enabled=True,export_selected=True)
+        self.service.tick(now=1000,skip_projects={self.project})
+        self.assertEqual(self.service.read(self.project,self.repo_id)['state'],'live-standby')
+        self.assertEqual(subprocess.run(['git','--git-dir',str(self.remote),'show-ref'],capture_output=True).stdout,b'')
+        self.service.tick(now=1001,skip_projects=set())
+        self.assertEqual(self.service.read(self.project,self.repo_id)['state'],'pending')
+        self.service.tick(now=1032,skip_projects=set())
+        self.assertEqual(self.service.read(self.project,self.repo_id)['state'],'current')
+        self.assertTrue(subprocess.check_output(['git','--git-dir',str(self.remote),'rev-parse','refs/heads/workbench-data']).strip())
