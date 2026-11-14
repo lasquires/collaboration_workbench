@@ -193,6 +193,7 @@ def workspace_read(parsed):
         live=WorkspaceLiveService(store).read(project)
         result['capabilities']['claim_scope']='local-only' if live['enabled'] else 'this-service'
         result['capabilities']['upstream_data_sync']=live['enabled']
+        result['capabilities']['shared_claim_coordination']='explicit-host-api' if live['enabled'] else 'this-service'
         return result
     if path == ['v1','tasks','merge-reversal-preview']:
         if set(options)!={'merge_id'}:
@@ -488,9 +489,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._shared_write(parsed, payload, principal)
             if parsed.path.startswith('/v1/live-') and not parsed.query:
                 action=parsed.path.removeprefix('/v1/live-')
-                extra={'configure':{'enabled'},'join-preview':set(),'join':{'review','choices'},'sync':set(),'review':{'side'},'resolve':{'side','review','choices'}}
+                extra={'configure':{'enabled'},'join-preview':set(),'join':{'review','choices'},'sync':set(),'review':{'side'},'resolve':{'side','review','choices'},'claims-read':{'task_id'},'claims-preview':{'operation'},'claims-submit':{'review_id'}}
                 if action not in extra or not isinstance(payload,dict):raise RoadmapError(400,'Invalid live connection action')
-                required={'project_id'}|extra[action];allowed=required|({'url','token_file'} if action=='configure' else set())
+                required={'project_id'}|extra[action];allowed=required|({'url','token_file'} if action=='configure' else {'cursor'} if action=='claims-read' else set())
                 if not required<=set(payload) or set(payload)-allowed:raise RoadmapError(400,'Invalid live connection request')
                 project=payload['project_id'];service=WorkspaceLiveService(_store())
                 try:
@@ -498,6 +499,9 @@ class Handler(BaseHTTPRequestHandler):
                     elif action=='join-preview':result=service.preview_join(project)
                     elif action=='join':result=service.join(project,payload['review'],payload['choices'])
                     elif action=='sync':result=service.sync_now(project)
+                    elif action=='claims-read':result=service.claims_read(project,payload['task_id'],payload.get('cursor'))
+                    elif action=='claims-preview':result=service.claims_preview(project,payload['operation'])
+                    elif action=='claims-submit':result=service.claims_submit(project,payload['review_id'])
                     elif action=='review':result=service.review(project,payload['side'])
                     else:result=service.resolve(project,payload['side'],payload['review'],payload['choices'])
                 except LiveConflict as error:

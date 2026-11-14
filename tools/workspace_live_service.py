@@ -13,11 +13,13 @@ try:
     from .roadmap_cli import ApiError
     from .workspace_project_contract import validate_manifest
     from .workspace_live_client import WorkspaceLiveClient,LiveConflict,validate_live_origin
+    from .workspace_live_claims import WorkspaceLiveClaims
 except ImportError:
     from roadmap_store import StoreError
     from roadmap_cli import ApiError
     from workspace_project_contract import validate_manifest
     from workspace_live_client import WorkspaceLiveClient,LiveConflict,validate_live_origin
+    from workspace_live_claims import WorkspaceLiveClaims
 
 _LOCKS={}
 _GUARD=threading.Lock()
@@ -87,9 +89,28 @@ class WorkspaceLiveService:
         except (OSError,ValueError):raise StoreError(400,'Private credential file is unavailable or malformed') from None
         return str(path)
 
+    def _endpoint(self,project,config):
+        return self._path(project).parent/('endpoint-'+hashlib.sha256(config['url'].encode()).hexdigest())
+
     def _client(self,project,config):
-        directory=self._path(project).parent/('endpoint-'+hashlib.sha256(config['url'].encode()).hexdigest())
+        directory=self._endpoint(project,config)
         return self.client_factory(self.store,project,config['actor_id'],config['url'],config['token_file'],directory)
+
+    def _claim_status(self,project,config):
+        if config.get('url') and (self._endpoint(project,config)/'host-claims.json').exists():
+            return WorkspaceLiveClaims(self._client(project,config)).status()
+        return {'scope':'host','state':'idle','pending':False,'review_id':None,'task_id':None,'acknowledgment_is_current_lease':False}
+
+    def _claim_control(self,project,method,*args):
+        with self._locked(project):
+            config=self._load(project)
+            if not config['enabled']:raise StoreError(409,'Enable the project live connection first')
+            self._bound(project)
+            return getattr(WorkspaceLiveClaims(self._client(project,config)),method)(*args)
+
+    def claims_read(self,project,task_id,cursor=None):return self._claim_control(project,'read',task_id,cursor)
+    def claims_preview(self,project,operation):return self._claim_control(project,'preview',operation)
+    def claims_submit(self,project,review_id):return self._claim_control(project,'submit',review_id)
 
     def configure(self,project,*,enabled,url=None,token_file=None):
         if type(enabled) is not bool:raise StoreError(400,'Live connection enabled must be boolean')
@@ -100,7 +121,7 @@ class WorkspaceLiveService:
                 try:origin=validate_live_origin(url if url is not None else config.get('url'))
                 except ValueError:raise StoreError(400,'Live host requires a credential-free HTTPS origin') from None
                 if config.get('url') and origin!=config['url']:
-                    if self._client(project,config).status()['pending']:raise StoreError(409,'Retry or resolve the pending old-host operation before replacing its endpoint')
+                    if self._client(project,config).status()['pending'] or self._claim_status(project,config)['pending']:raise StoreError(409,'Retry or resolve the pending old-host operation before replacing its endpoint')
                     if token_file is None:raise StoreError(400,'Choose a credential explicitly for the new host')
                 credential=self._credential(token_file if token_file is not None else config.get('token_file'))
                 actor=self.store.read_v1('capabilities',project)['capabilities']['local_principal_id']
@@ -115,6 +136,7 @@ class WorkspaceLiveService:
         self._project(project);config=self._load(project)
         status=config.get('last_status') or {'pending':False,'phase':None,'claim_scope':'local-only','base_id':None}
         result={**status,'enabled':config['enabled'],'state':config['state'],'error':config.get('error') or status.get('error')}
+        result['host_claims']=self._claim_status(project,config)
         if config.get('url'):result['url']=config['url']
         result['preferred_transport']='live' if config['enabled'] and result['state'] in ('current','pending','review-required') else 'git-fallback' if config['enabled'] else 'local'
         return result

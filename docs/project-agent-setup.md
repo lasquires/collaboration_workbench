@@ -71,7 +71,9 @@ controls. Check connection status and resolve conflicts through reviewed preview
 A successful repository connection alone does not establish synchronized research.
 
 Snapshot synchronization does not transfer active claims as shared leases. Local
-clients report local-only claims; use the host directly for shared coordination.
+clients report local-only claims. Use the explicit host claim preview/submit/read
+APIs described in [live hosting](self-hosting.md), or connect to the host directly,
+for shared coordination. Never infer a host lease from portable task data.
 Task journals share their full text, evidence and correction links as immutable
 records in schema 9. Read them with the scoped task history/context endpoints;
 imported author labels are provenance, not authentication grants.

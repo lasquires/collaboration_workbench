@@ -93,9 +93,44 @@ have integration coverage using independent stores and a real stopped/restarted
 HTTP host. The browser controls for configuring and reviewing live connections
 are still being completed.
 
-Local-client claims remain **local-only**. Snapshot exchange does not create an
-acknowledged host lease. Use the host directly for shared claim coordination until
-lease relay is implemented. Portable event metadata preserves attribution and
+Local-client claim projections remain **local-only**. Snapshot exchange does not
+create an acknowledged host lease. The explicit host claim controls below provide
+shared coordination separately. Portable event metadata preserves attribution and
 payload digests. Schema 9 also shares immutable task-journal text, evidence, and
 correction links through the same portable exchange.
 Enabling a listener or completing synchronization never verifies research claims.
+
+
+## Coordinate claims through a local app
+
+A configured local app can operate the host's claims with the received project
+credential. These controls are owner-only on the local app service; shared guests
+cannot proxy through its owner's private upstream credential.
+
+1. `POST /v1/live-claims-read` with `project_id` and `task_id` reads the current
+   host claim list. Use its returned cursor for additional pages. A failed/offline
+   read does not establish availability or ownership.
+2. `POST /v1/live-claims-preview` with `project_id` and `operation` prepares a
+   concrete command against the host's current service and task revisions. An
+   operation names `op`, `task_id`, and `rationale`. Supported operations are
+   `claim_task`, `heartbeat_claim`, `release_claim`, and `handoff_claim`.
+   Claim creation can include `reserved_paths` and `lease_seconds`. Handoff
+   requires the host's claim-management capability and a host principal ID.
+3. `POST /v1/live-claims-submit` with `project_id` and the returned `review_id`
+   submits the stored command. It accepts an identity, not an editable payload.
+   A stale revision requires a fresh preview; it is never silently rebased.
+
+An acknowledged transaction proves the host processed that command. Read the host
+claim list again to inspect its current expiry/release state: an acknowledgment is
+not a permanent lease. Renew before expiry with an explicit heartbeat operation.
+Host rules prevent competing claims and overlapping reserved paths, including
+unreleased expired claims that need a handoff or release.
+
+A lost response leaves a private pending command. Retry the same review ID after
+restart; the exact original request is replayed without duplicating the claim.
+Pending claim state appears under `host_claims` in live status. Disabling the
+connection retains it, and replacing the host is blocked until it is resolved.
+Retries require the original authenticated principal and host installation.
+Credentials and lease state never enter Git exchange, and these operations do not
+alter local-only claims. The background data worker never silently acquires,
+renews, or retries a host lease.

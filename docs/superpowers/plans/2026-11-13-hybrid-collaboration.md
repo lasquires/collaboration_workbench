@@ -101,3 +101,16 @@ original provenance, schema-8 backfill without event/membership changes, malform
 payload rejection without writes, stable pagination and existing Git/live flows.
 Old immutable snapshots remain unchanged; missing journal rows mean unknown
 historical content, never fabricated progress. This does not transfer leases.
+
+
+### Explicit host-lease command integration
+
+Keep live claims outside portable data. Owner-operated local controls read the
+host, prepare one frozen revision-guarded claim/heartbeat/release/handoff command,
+and submit only its stored review identity. Bind pending replay to the original
+host installation and authenticated principal. Store uncertain requests privately
+and block host replacement; never acquire or renew a lease from the background
+snapshot worker. A transaction acknowledgment is distinct from a current lease.
+Verify competing workers/path reservations, stale revisions, exact replay after
+commit-response loss and restart, offline behavior, principal/host replacement,
+capability enforcement and guest proxy denial using actual authenticated HTTP.

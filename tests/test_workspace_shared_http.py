@@ -61,6 +61,14 @@ class SharedHttpTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
 
+    def test_live_claim_controls_cannot_proxy_owner_credentials_for_guests(self):
+        for action,fields in (('claims-read',{'task_id':'TASK'}),('claims-preview',{'operation':{'op':'claim_task','task_id':'TASK','rationale':'Work'}}),('claims-submit',{'review_id':'frozen-request'})):
+            body={'project_id':self.project,**fields}
+            self.assertEqual(403,self.request('/v1/live-'+action,self.member_token,body)[0])
+            self.assertEqual(409,self.request('/v1/live-'+action,self.owner_token,body)[0])
+        body={'project_id':self.other,'task_id':'TASK'}
+        self.assertEqual(403,self.request('/v1/live-claims-read',self.member_token,body)[0])
+
     def test_missing_auth_and_legacy_routes_are_blocked(self):
         self.assertEqual(401, self.request('/v1/projects')[0])
         self.assertEqual(403, self.request('/api/tasks', self.owner_token)[0])
