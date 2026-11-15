@@ -16,8 +16,8 @@ except ImportError:
 
 OPS = {'register_exchange_snapshot', 'import_bundle'}
 RESOURCES = {'exchange'}
-TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_answer_selections question_resolution_events git_source_manifests journal_disclosures'.split())
-IMMUTABLE = set('answers principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_resolution_events git_source_manifests journal_disclosures'.split())
+TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_answer_selections question_resolution_events git_source_manifests journal_disclosures task_disclosures'.split())
+IMMUTABLE = set('answers principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_resolution_events git_source_manifests journal_disclosures task_disclosures'.split())
 # Only mutable relationships have row-removal semantics. Evidence/history rows
 # remain append-only; unknown-base omissions never establish a deletion.
 PRESENCE_TABLES = {'task_links'}
@@ -146,7 +146,7 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False, _for_merg
     for event in history:
         event.pop('sequence',None)
     if portable:
-        history = [event for event in history if event['kind'] not in {'bind_root','hydrate_artifact_version','repository_snapshot','register_repository','import_bundle','import_publication','repository_index_publication','journal_sharing_review'}]
+        history = [event for event in history if event['kind'] not in {'bind_root','hydrate_artifact_version','repository_snapshot','register_repository','import_bundle','import_publication','repository_index_publication','journal_sharing_review','task_sharing_review'}]
         history = [{**{key:event[key] for key in _PORTABLE_HISTORY - {'payload_sha256'}},
                     'payload_sha256':research.digest({key:event.get(key) for key in ('before_json','after_json','rationale')})}
                    for event in history]
@@ -162,6 +162,11 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False, _for_merg
             import workspace_journal_disclosure
         known_roots=workspace_journal_disclosure.roots(db,project_id)
         workspace_journal_disclosure.project_records(db,project_id,rows,known_roots,require_approval=not _for_merge)
+        try:
+            from . import workspace_task_disclosure
+        except ImportError:
+            import workspace_task_disclosure
+        workspace_task_disclosure.project_records(db,project_id,rows,known_roots,require_approval=not _for_merge)
     contributors={r.get('created_by') for records in rows.values() for r in records}
     contributors.update(r.get('reviewer_id') for records in rows.values() for r in records)
     contributors.update(e.get('actor_id') for e in history)
@@ -187,7 +192,7 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False, _for_merg
 
 def _compatible_schema(db,schema):
     current=_schema(db)
-    return (set(current)-set(schema)<={'task_journal_entries','merge_compensations','finding_revision_lineage','evidence_change_events','research_review_notices','answer_contexts','answer_reviews','question_answer_selections','question_resolution_events','git_source_manifests','journal_disclosures'}
+    return (set(current)-set(schema)<={'task_journal_entries','merge_compensations','finding_revision_lineage','evidence_change_events','research_review_notices','answer_contexts','answer_reviews','question_answer_selections','question_resolution_events','git_source_manifests','journal_disclosures','task_disclosures'}
             and not set(schema)-set(current) and all(schema[key]==current[key] for key in schema))
 
 
@@ -230,7 +235,7 @@ def _validate(db, project, bundle):
                     research.error(400,'Invalid exchange integer value')
             if table=='tasks':
                 try:
-                    if not isinstance(json.loads(row['record_json']),dict):raise ValueError()
+                    if not all(isinstance(json.loads(row[slot]),dict) for slot in ('record_json','original_json')):raise ValueError()
                 except (ValueError,TypeError):research.error(400,'Task exchange record must be an object')
             key=_key(bundle['schema'],table,row)
             if key in seen: research.error(400,'Duplicate exchange identity')
@@ -297,6 +302,11 @@ def _validate(db, project, bundle):
     except ImportError:
         import workspace_journal_disclosure
     workspace_journal_disclosure.validate_bundle(project,bundle['records'],db)
+    try:
+        from . import workspace_task_disclosure
+    except ImportError:
+        import workspace_task_disclosure
+    workspace_task_disclosure.validate_bundle(project,bundle['records'])
     validations={r['id']:r for r in bundle['records']['validation_records']}
     task_namespace.validate_tasks(db,project,bundle['records']['tasks'])
     for row in bundle['records']['tasks']:
@@ -545,6 +555,12 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
             if table=='evidence_links' and change['status']!='addition':
                 previous_link=db.execute('SELECT state FROM evidence_links WHERE project_id=? AND id=?',(project,row['id'])).fetchone()
                 if previous_link[0]!='available' and row['state']=='available':research.error(409,'Withdrawn evidence cannot be revived by importing an old source link')
+            if table=='tasks' and bundle['format']==_PORTABLE_FORMAT and change['status']!='addition':
+                try:
+                    from . import workspace_task_disclosure
+                except ImportError:
+                    import workspace_task_disclosure
+                row=workspace_task_disclosure.restore_private(db,project,row)
             if table=='tasks':row=task_namespace.task_record(row,task_keys)
             elif table=='task_links':row=task_namespace.link_record(row,task_keys)
             if table=='artifact_blobs': row['body']=base64.b64decode(row['body']['base64'])

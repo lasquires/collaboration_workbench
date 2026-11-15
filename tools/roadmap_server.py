@@ -166,7 +166,7 @@ def transact(payload: object) -> dict:
 def workspace_read(parsed):
     """Strict versioned read adapter; project selection is never implicit."""
     params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
-    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id", "merge_id", "repository_id", "portable", "compensation_id", "subject_type", "subject_id", "manifest_id"}
+    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id", "merge_id", "repository_id", "portable", "compensation_id", "subject_type", "subject_id", "manifest_id", "key", "source_sha256", "disclosure_id"}
     if set(params) - allowed or any(len(values) != 1 for values in params.values()):
         raise RoadmapError(400, "Unknown or duplicate workspace parameter")
     values = {key: item[0] for key, item in params.items()}
@@ -216,6 +216,12 @@ def workspace_read(parsed):
         if set(options)-{'ancestor_id','portable'}:
             raise RoadmapError(400,'Unsupported exchange export parameter')
         return _store().exchange_preview(project_id,ancestor_id=options.get('ancestor_id'),portable=options.get('portable',False))
+    if path==['v1','task-sharing-original']:
+        if set(options)-{'key','source_sha256','disclosure_id'}:raise RoadmapError(400,'Unsupported task original parameter')
+        return _store().read_v1('task-sharing-original',project_id,**options)
+    if path==['v1','task-sharing-review']:
+        if set(options)-{'limit','cursor'}:raise RoadmapError(400,'Unsupported task sharing review parameter')
+        return _store().read_v1('task-sharing-review',project_id,**options)
     if path==['v1','journal-sharing-review']:
         if set(options)-{'limit','cursor'}:raise RoadmapError(400,'Unsupported sharing review parameter')
         return _store().read_v1('journal-sharing-review',project_id,**options)
@@ -317,6 +323,8 @@ class Handler(BaseHTTPRequestHandler):
             raise RoadmapError(403, 'Project access denied')
 
     def _shared_read(self, parsed, principal):
+        if parsed.path=='/v1/task-sharing-original' and not principal['is_owner']:
+            raise RoadmapError(403,'Private original requires host owner credential')
         if parsed.path == '/v1/projects':
             result = workspace_read(parsed)
             if not principal['is_owner']:
@@ -370,7 +378,7 @@ class Handler(BaseHTTPRequestHandler):
             if any(isinstance(op, dict) and op.get('op') in owner_ops for op in operations) and not principal['is_owner']:
                 raise RoadmapError(403, 'Host filesystem access requires owner credential')
             required = {'contribute'}
-            if any(isinstance(op, dict) and op.get('op') in {'record_validation', 'complete_task', 'approve_guidance', 'review_answer', 'review_journal_sharing'} for op in operations):
+            if any(isinstance(op, dict) and op.get('op') in {'record_validation', 'complete_task', 'approve_guidance', 'review_answer', 'review_journal_sharing', 'review_task_sharing'} for op in operations):
                 required.add('review')
             if any(isinstance(op, dict) and op.get('op') in {'handoff_claim'} for op in operations):
                 required.add('manage_claims')

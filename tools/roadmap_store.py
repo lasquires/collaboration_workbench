@@ -653,7 +653,7 @@ class RoadmapStore:
                     if names & owner_ops and not credential["is_owner"]:
                         raise StoreError(403, "Host filesystem access requires owner credential")
                     required = {"contribute"}
-                    if names & {"record_validation", "complete_task", "approve_guidance", "review_answer", "review_journal_sharing"}:
+                    if names & {"record_validation", "complete_task", "approve_guidance", "review_answer", "review_journal_sharing", "review_task_sharing"}:
                         required.add("review")
                     if "handoff_claim" in names:
                         required.add("manage_claims")
@@ -666,7 +666,7 @@ class RoadmapStore:
                     membership=db.execute("SELECT m.capabilities_json FROM project_members m JOIN principals p ON p.id=m.principal_id WHERE m.project_id=? AND p.id=? AND p.archived_at IS NULL",(envelope['project_id'],current_actor['principal_id'])).fetchone()
                     if membership is None or 'contribute' not in json.loads(membership[0]):
                         raise StoreError(403,'Principal lacks current project contribution')
-                    if any(op.get('op') in {'review_answer','review_journal_sharing'} for op in operations) and 'review' not in json.loads(membership[0]):
+                    if any(op.get('op') in {'review_answer','review_journal_sharing','review_task_sharing'} for op in operations) and 'review' not in json.loads(membership[0]):
                         raise StoreError(403,'Current independent review capability required')
                     if current_actor.get('session_id') is not None and not db.execute('SELECT 1 FROM agent_sessions WHERE id=? AND principal_id=?',(current_actor['session_id'],current_actor['principal_id'])).fetchone():
                         raise StoreError(403,'Session does not belong to current principal')

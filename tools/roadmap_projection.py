@@ -333,5 +333,10 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
         if attempt_page['next_cursor']: section_cursors['structured_attempts']={'path':'/v1/attempts','task_id':uid,'limit':50,'order':'desc','cursor':attempt_page['next_cursor']}
         if blocker_page['next_cursor']: section_cursors['blockers']={'path':'/v1/blockers','task_id':uid,'limit':50,'order':'desc','state':'open','cursor':blocker_page['next_cursor']}
         context={'task':_task(row,rows,progress),'fields':{k:v for k,v in record.items() if k!='id'},'instructions':instructions,'ancestors':ancestors,'acceptance':record.get('acceptance'),'acceptance_state':row['acceptance_state'],'gate_revision':row['gate_revision'],'dependencies':dependencies,'blockers':typed_blockers[:50]+record.get('blockers',[]),'reservations':record.get('reserved_paths',[]),'validation':validation,'structured_attempts':attempts[:50],'findings':[],'hints':[],'progress':progress[uid],'history':history_response['items'], 'event_cursor':event_cursor,'omitted_sections':omitted,'section_cursors':section_cursors}
+        try:
+            from . import workspace_task_disclosure
+        except ImportError:
+            import workspace_task_disclosure
+        context['task_disclosures']=workspace_task_disclosure.context_labels(db,project_id,uid)
         return {**envelope,'context':context,'event_cursor':event_cursor}
     _error(404,'Unknown workspace resource')

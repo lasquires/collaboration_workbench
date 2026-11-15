@@ -144,7 +144,7 @@ entry offers **redacted** and/or **omitted** proposals; there is no default choi
 Redaction replaces each unsafe string value with `[LOCAL_PATH_REDACTED]` while
 keeping safe sibling values. Omission publishes an explicit withheld-entry notice.
 Neither edits the original note. Unsafe identity/attribution metadata and unsupported
-non-journal fields keep export blocked.
+fields keep export blocked; task prose has the separate review below.
 
 Submit a normal scoped transaction containing:
 
@@ -183,3 +183,50 @@ of complete original history. Git/live status distinguishes local
 review its own blocked notes. Generated roots, raw blobs and credentials remain
 excluded. Upgrade collaborators to schema16 before exchanging this new table;
 older snapshots without it remain readable without rewriting their hashes.
+
+
+## Review private task prose
+
+Schema17 adds a separate explicit review for legacy task `summary` and `attempts`
+fields, including prose in nested historical `original_record.subtasks`. Read
+`GET /v1/task-sharing-review?project_id=<project-id>&limit=20`. Pages cover tasks;
+a page can contain no blocked fields and still have a next cursor. Each item
+names a task UUID, JSON slot and field, source-value digest, offered public copy,
+and whether that exact copy already has local approval. No choice is selected.
+Unsupported authority fields have no proposal and continue to block export.
+
+Use an ordinary revision-checked transaction with `review_task_sharing`, the
+preview's exact `review_digest`, `limit` and `cursor`, and a `choices` object
+mapping every item's exact `key` to `redacted`. Both current `contribute` and
+`review` capabilities are required. Review every public value before submission;
+redaction preserves surrounding prose where possible and marks private paths.
+Historical `/api/tasks` and `/api/transaction` references are labeled explicitly
+as root-relative API routes, preserving their method and measured outcomes.
+Path-bearing structured evidence, acceptance and unknown authority fields cannot
+be concealed through an attempt disclosure. There is no omission mode for tasks.
+The dashboard approval controls for this new review are still pending.
+
+This does not rewrite the task's local `record_json` or `original_json`. Approved
+source values are retained in an immutable local vault with their content hashes.
+Portable bundles substitute only exact approved field values and include immutable
+`task_disclosures`; neither the vault nor local consent receipts is portable.
+A matching public field returned by a peer leaves local private text intact. A
+substantive peer edit follows the normal common-base merge rules, while retained
+private history survives. A changed private field needs a new explicit review.
+Imported disclosures never approve an unsafe original on another installation.
+Task context includes bounded disclosure metadata and original-availability labels;
+these source hashes describe private content, not native verification.
+
+Review uses the same stale-page and exact-request rules as journal sharing. Reread
+after a successful review; never automatically rebase a409 or create a new request
+ID for an uncertain outcome. Upgrade collaborators to schema17 before exchanging
+the new task table. Older bundles without it remain readable. The source project
+is not migrated merely by upgrading the app or reviewing a disclosure.
+
+For on-demand original inspection, the local host or an authenticated host owner
+can read `/v1/task-sharing-original` with `project_id`, the preview item's exact
+`key` and `source_sha256`. Changed content returns409. After approval, use
+`project_id` and `disclosure_id` to inspect its retained immutable original even
+if current prose changed. Shared-service collaborator credentials cannot read
+this private vault endpoint. Original text is never included in review-page
+previews, public disclosures or portable bundles.

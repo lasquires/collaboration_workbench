@@ -127,7 +127,8 @@ class DisclosureTests(unittest.TestCase):
             self.assertEqual(dict(db.execute('SELECT * FROM task_journal_entries').fetchone()),self.original)
         upgraded=RoadmapStore(store.path)
         with upgraded._connection() as db:
-            self.assertEqual(db.execute('SELECT schema_version FROM store_meta').fetchone()[0],16)
+            from tools.roadmap_schema import SCHEMA_VERSION
+            self.assertEqual(db.execute('SELECT schema_version FROM store_meta').fetchone()[0],SCHEMA_VERSION)
             self.assertEqual(dict(db.execute('SELECT * FROM task_journal_entries').fetchone()),self.original)
             self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(),[])
 

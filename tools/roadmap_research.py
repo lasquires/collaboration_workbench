@@ -11,10 +11,10 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 
-OPS = {'review_journal_sharing', 'register_root', 'bind_root', 'register_artifact', 'register_artifact_version',
+OPS = {'review_task_sharing', 'review_journal_sharing', 'register_root', 'bind_root', 'register_artifact', 'register_artifact_version',
        'create_index_run', 'stage_batch', 'publish_run', 'create_question',
        'record_negative_search', 'import_variable_registry', 'revise_question', 'create_finding', 'revise_finding', 'archive_finding', 'restore_finding', 'set_evidence_state','create_answer','review_answer','resolve_question','set_question_state'}
-RESOURCES = {'journal-sharing-review', 'artifacts', 'artifact-versions', 'index-runs', 'occurrences',
+RESOURCES = {'task-sharing-original', 'task-sharing-review', 'journal-sharing-review', 'artifacts', 'artifact-versions', 'index-runs', 'occurrences',
              'observations', 'questions', 'negative-searches', 'findings', 'finding-revisions', 'evidence-links', 'evidence-changes', 'research-review-notices','answers','answer-reviews','question-resolutions','source-manifests'}
 
 
@@ -193,6 +193,12 @@ def apply_operation(db,project,principal,op,request_id):
         from . import workspace_answers
     except ImportError:
         import workspace_answers
+    if kind=='review_task_sharing':
+        try:
+            from . import workspace_task_disclosure
+        except ImportError:
+            import workspace_task_disclosure
+        return workspace_task_disclosure.apply_operation(db,project,principal,op,request_id)
     if kind=='review_journal_sharing':
         try:
             from . import workspace_journal_disclosure
@@ -498,6 +504,20 @@ def read(db,resource,project,*,limit=None,cursor=None,**unused):
         from . import workspace_answers
     except ImportError:
         import workspace_answers
+    if resource=='task-sharing-original':
+        if limit is not None or cursor is not None or set(unused)-{'key','source_sha256','disclosure_id'}:error(400,'Unsupported task original filter')
+        try:
+            from . import workspace_task_disclosure
+        except ImportError:
+            import workspace_task_disclosure
+        return workspace_task_disclosure.read_original(db,project,**unused)
+    if resource=='task-sharing-review':
+        if unused:error(400,'Unsupported task sharing review filter')
+        try:
+            from . import workspace_task_disclosure
+        except ImportError:
+            import workspace_task_disclosure
+        return workspace_task_disclosure.preview(db,project,limit=limit,cursor=cursor)
     if resource=='journal-sharing-review':
         if unused:error(400,'Unsupported sharing review filter')
         try:

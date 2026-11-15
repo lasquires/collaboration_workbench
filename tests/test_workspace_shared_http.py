@@ -61,6 +61,31 @@ class SharedHttpTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
 
+    def test_task_disclosure_review_http_scope_and_permission(self):
+        import uuid
+        def write(actor,token,ops):
+            return self.request('/v1/transactions',token,{'project_id':self.project,'actor':{'principal_id':actor},'request_id':str(uuid.uuid4()),'expected_revision':self.store.snapshot()['revision'],'operations':ops})
+        code,result=write(self.member_id,self.member_token,[{'op':'create','alias':'private-task','record':{'title':'Task disclosure','status':'ready','summary':r'Private C:\Users\Synthetic\local.txt'}}])
+        self.assertEqual(code,200,result)
+        path='/v1/task-sharing-review?project_id='+self.project
+        self.assertEqual(self.request(path)[0],401)
+        self.assertEqual(self.request('/v1/task-sharing-review?project_id='+self.other,self.member_token)[0],403)
+        code,page=self.request(path,self.member_token);self.assertEqual(code,200,page)
+        self.assertNotIn('Synthetic',json.dumps(page))
+        from urllib.parse import urlencode
+        item=page['items'][0];original_path='/v1/task-sharing-original?'+urlencode({'project_id':self.project,'key':item['key'],'source_sha256':item['source_sha256']})
+        self.assertEqual(self.request(original_path,self.member_token)[0],403)
+        code,original=self.request(original_path,self.owner_token);self.assertEqual(code,200,original);self.assertIn('Synthetic',original['raw_json'])
+        op={'op':'review_task_sharing','review_digest':page['review_digest'],'limit':page['limit'],'cursor':page['cursor'],'choices':{item['key']:'redacted' for item in page['items']}}
+        self.assertEqual(write(self.member_id,self.member_token,[op])[0],403)
+        with self.store._connection() as db:owner=auth.authenticate(db,self.owner_token)['principal_id']
+        code,result=write(owner,self.owner_token,[op]);self.assertEqual(code,200,result)
+        code,bundle=self.request('/v1/exchange-export?project_id='+self.project+'&portable=true',self.member_token)
+        self.assertEqual(code,200,bundle);self.assertNotIn('Synthetic',json.dumps(bundle))
+        with self.store._connection() as db:
+            self.assertIn('Synthetic',db.execute('SELECT original_json FROM tasks').fetchone()[0])
+            self.assertEqual(db.execute('SELECT count(*) FROM task_private_fields').fetchone()[0],2)
+
     def test_journal_disclosure_review_is_scoped_and_requires_current_review_role(self):
         import uuid
         def write(actor,token,ops):
