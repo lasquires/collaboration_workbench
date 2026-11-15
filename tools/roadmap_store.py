@@ -830,8 +830,12 @@ class RoadmapStore:
                         and _workspace['payload'].get('concurrency_mode','global')=='global'):
                     try:
                         committed=db.execute('SELECT 1 FROM transactions WHERE request_id=?',(request_id,)).fetchone()
-                        if committed is None:
-                            envelope=_workspace['payload']
+                        store_meta=db.execute('SELECT store_id FROM store_meta').fetchone()
+                        envelope=_workspace['payload']
+                        # This installation cannot disprove a commit on the
+                        # original installation named by the frozen revision.
+                        same_store=store_meta is not None and envelope['expected_revision'].split(':',1)[0]==store_meta[0]
+                        if committed is None and same_store:
                             error.transaction_rejection={'project_id':envelope['project_id'],
                                 'principal_id':envelope['actor']['principal_id'],'request_id':request_id,
                                 'expected_revision':envelope['expected_revision'],'state':'not_applied'}

@@ -31,6 +31,14 @@ class TransactionOutcomeTests(unittest.TestCase):
         self.assertEqual(self.store.snapshot()['revision'],before)
         self.assertEqual([q['id'] for q in self.store.read_v1('questions',self.project)['items']],['new-progress'])
 
+    def test_other_installation_request_remains_unknown_on_this_store(self):
+        body=self.payload({'op':'create_question','id':'original-store-request','text':'May have been applied on original installation'})
+        body['expected_revision']=str(uuid.uuid4())+':1';before=self.store.snapshot()['revision']
+        with self.assertRaises(StoreError) as error:self.store.transact_v1(body)
+        self.assertEqual(error.exception.status,409);self.assertFalse(hasattr(error.exception,'transaction_rejection'))
+        self.assertEqual(self.store.snapshot()['revision'],before)
+        self.assertEqual(self.store.read_v1('questions',self.project)['items'],[])
+
     def test_partial_domain_changes_are_rolled_back_before_marker(self):
         body=self.payload({'op':'create_finding','id':'partial','claim':'This must roll back'}, {'op':'revise_finding','finding_id':'absent','expected_record_revision':1,'fields':{'claim':'Invalid missing target'},'rationale':'Fixture'})
         before=self.store.snapshot()['revision']
@@ -84,6 +92,12 @@ class TransactionOutcomeHttpTests(unittest.TestCase):
         self.assertEqual(error['transaction_rejection']['state'],'not_applied')
         code,error=f.request('/v1/questions/absent/context?project_id='+f.project,f.member_token)
         self.assertEqual(code,404,error);self.assertNotIn('transaction_rejection',error)
+
+    def test_http_other_store_identity_has_no_not_applied_proof(self):
+        f=self.fixture;body=self.body();body['expected_revision']=str(uuid.uuid4())+':1'
+        code,error=f.request('/v1/transactions',f.member_token,body)
+        self.assertEqual(code,409,error);self.assertNotIn('transaction_rejection',error)
+        self.assertEqual(f.store.read_v1('questions',f.project)['items'],[])
 
     def test_response_failure_after_commit_has_no_rollback_proof(self):
         f=self.fixture;body=self.body();original=http_fixture.server.Handler._json
