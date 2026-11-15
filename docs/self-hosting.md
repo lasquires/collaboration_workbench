@@ -155,3 +155,61 @@ Git exchange. Older replay fails closed under the existing base/operation guards
 changed choices require a fresh explicit review. Background data synchronization
 may finish an already prepared command but never prepares new review choices or
 acquires a host claim.
+
+
+## Use the dashboard live controls
+
+Open the dashboard, choose the connected project, then select **Live collaboration**.
+In a trusted local session, the app owner can enable live synchronization, enter
+the host URL and the path to the received private credential file, and save the
+connection. In authenticated shared mode, these controls require the host owner.
+The browser receives the credential path you enter, never the credential contents.
+Leave the path blank on later saves to reuse the stored credential. Disabling the
+connection preserves queued changes and command receipts.
+
+Connection status names the selected transport and current service state. An
+`offline` or `join-required` report can select Git fallback, but this does not mean
+Git sharing is enabled or that a push has succeeded. Configure Git sharing separately
+under Repositories. Refresh status to inspect the latest background worker report.
+
+Start a join, host-conflict or local-conflict review. Host conflict choices label
+HOST current data versus THIS APP queued data; join/local choices label THIS APP
+versus HOST. No conflict choice is preselected. Save each page before advancing;
+there are at most 20 conflict fields per page. Long values have bounded previews
+and explicit full-value slice readers. Immutable history must keep the local value.
+After reviewing every conflict, acknowledge the saved choices and prepare the
+command. Preparation checks the current host contribution; it never rebases a
+stale review. Submit the prepared command explicitly.
+
+If the response is lost, reload and use **Retry exact saved action**. Reload only
+reads state; it never submits the command. A server-pending command can also be
+confirmed explicitly with its existing handle. HTTP errors alone do not establish
+that submission was not applied. An uncertain command cannot be discarded or
+replaced with a different host. A verified rejection requires a fresh review.
+
+The service keeps full reviews in private bounded caches. Browser recovery stores
+only project/review IDs, command handles and field-choice modes, never record
+bundles or token contents. The latest 256 terminal UI confirmations are retained
+privately after a review is discarded. Confirming a retained handle can return a
+historical receipt without contacting the host; the dashboard labels its time and
+states that current access, synchronization and leases were not checked. Corrupt
+recovery state fails closed instead of silently replacing an uncertain action.
+
+Under Host task leases, enter the host task identity, rationale and relevant lease
+fields. Reserved paths are relative paths, one per line, for a new claim. Preview
+shows the concrete stored action; submit that reviewed action explicitly. Read
+current host leases separately to inspect ownership, expiry and release state.
+Lease lists support explicit next-page cursors. A failed reread clears the previous
+current-read display; a saved acknowledgment remains historical. There is no
+automatic acquisition, heartbeat, handoff or lease retry.
+
+
+Lease command confirmations also retain the latest 256 terminal outcomes in private
+app state, bound to the local store, project and actor. A later preview or endpoint
+change does not turn an older completed handle into a new command. Retrying that
+handle returns its recorded host, principal and time with `historical_only: true`
+and `current_access_checked: false`; it never proves a current lease. A newer
+prepared lease review remains separate. Known not-applied rejections have an exact
+review-bound receipt so the dashboard can safely clear recovery and allow a fresh
+explicit preview. An HTTP error by itself never clears the browser's saved lease
+submission. Corrupt receipts fail closed, and evicted unknown handles never execute.

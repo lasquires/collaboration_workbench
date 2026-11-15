@@ -111,6 +111,8 @@ class WorkspaceLiveService:
     def claims_read(self,project,task_id,cursor=None):return self._claim_control(project,'read',task_id,cursor)
     def claims_preview(self,project,operation):return self._claim_control(project,'preview',operation)
     def claims_submit(self,project,review_id):return self._claim_control(project,'submit',review_id)
+    def claims_confirm(self,project,review_id):return self._claim_control(project,'confirm',review_id)
+    def claims_review(self,project):return self._claim_control(project,'review_saved')
 
     def configure(self,project,*,enabled,url=None,token_file=None):
         if type(enabled) is not bool:raise StoreError(400,'Live connection enabled must be boolean')
@@ -121,7 +123,11 @@ class WorkspaceLiveService:
                 try:origin=validate_live_origin(url if url is not None else config.get('url'))
                 except ValueError:raise StoreError(400,'Live host requires a credential-free HTTPS origin') from None
                 if config.get('url') and origin!=config['url']:
-                    if self._client(project,config).status()['pending'] or self._claim_status(project,config)['pending']:raise StoreError(409,'Retry or resolve the pending old-host operation before replacing its endpoint')
+                    try:
+                        from .workspace_live_ui import pending_ui
+                    except ImportError:
+                        from workspace_live_ui import pending_ui
+                    if pending_ui(self,project) or self._client(project,config).status()['pending'] or self._claim_status(project,config)['pending']:raise StoreError(409,'Retry or resolve the pending old-host operation before replacing its endpoint')
                     if token_file is None:raise StoreError(400,'Choose a credential explicitly for the new host')
                 credential=self._credential(token_file if token_file is not None else config.get('token_file'))
                 actor=self.store.read_v1('capabilities',project)['capabilities']['local_principal_id']

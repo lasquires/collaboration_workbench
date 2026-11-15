@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 from pathlib import Path
 from urllib.parse import parse_qs,urlsplit
 from tools import workspace_auth
@@ -48,6 +49,107 @@ class LiveClaimTests(unittest.TestCase):
 
     def operation(self,task='TASK',**extra):
         return {'op':'claim_task','task_id':task,'rationale':'Coordinate shared work',**extra}
+
+    def test_completed_claim_handle_survives_a_later_preview_without_host_execution(self):
+        review=self.claims[0].preview(self.operation());self.claims[0].submit(review['review_id'])
+        newer=self.claims[0].preview(self.operation('OTHER'));revision=self.host.snapshot()['revision'];requests=len(self.requests)
+        self.online=False
+        receipt=WorkspaceLiveClaims(self.clients[0]).submit(review['review_id'])
+        self.assertEqual(receipt['state'],'acknowledged');self.assertTrue(receipt['historical_only'])
+        self.assertEqual(receipt['command_receipt']['review_id'],review['review_id'])
+        self.assertFalse(receipt['acknowledgment_is_current_lease']);self.assertEqual(len(self.requests),requests)
+        self.assertEqual(self.host.snapshot()['revision'],revision)
+        self.assertEqual(self.claims[0].review_saved()['review']['review_id'],newer['review_id'])
+
+    def test_confirm_returns_typed_not_applied_rejection_after_new_preview(self):
+        review=self.claims[0].preview(self.operation())
+        other=self.claims[1].preview(self.operation('OTHER'));self.claims[1].submit(other['review_id'])
+        rejected=self.claims[0].confirm(review['review_id']);self.assertEqual(rejected['state'],'rejected');self.assertTrue(rejected['not_applied'])
+        self.claims[0].preview(self.operation());self.online=False
+        saved=self.claims[0].confirm(review['review_id'])
+        self.assertEqual(saved['state'],'rejected');self.assertEqual(saved['command_receipt']['review_id'],review['review_id'])
+
+    def test_malformed_claim_receipts_fail_closed(self):
+        review=self.claims[0].preview(self.operation());self.claims[0].receipts_path.write_text('{broken',encoding='utf-8');requests=len(self.requests)
+        with self.assertRaises(StoreError) as error:self.claims[0].submit(review['review_id'])
+        self.assertEqual(error.exception.status,503);self.assertEqual(len(self.requests),requests)
+
+    def test_confirmation_survives_host_replacement_but_not_another_local_store(self):
+        review=self.claims[0].preview(self.operation());self.claims[0].submit(review['review_id']);self.online=False
+        source=self.clients[0]
+        changed=WorkspaceLiveClient(source.store,self.project,source.actor_id,'https://replacement.example',source.token_file,self.root/'replacement',requester=source.requester)
+        result=WorkspaceLiveClaims(changed).confirm(review['review_id'])
+        self.assertEqual(result['command_receipt']['url'],'https://host.example');self.assertFalse(result['current_access_checked'])
+        with self.assertRaises(StoreError):self.claims[1].confirm(review['review_id'])
+
+    def test_claim_receipt_survives_active_state_publish_crash(self):
+        review=self.claims[0].preview(self.operation());claims=self.claims[0];write=claims._atomic
+        def crash(path,raw):
+            if path==claims.path and json.loads(raw)['state']=='acknowledged':raise OSError('lost active state publication')
+            return write(path,raw)
+        with patch.object(claims,'_atomic',side_effect=crash):
+            with self.assertRaises(OSError):claims.submit(review['review_id'])
+        self.online=False;restarted=WorkspaceLiveClaims(self.clients[0]);requests=len(self.requests)
+        self.assertFalse(restarted.status()['pending']);result=restarted.confirm(review['review_id'])
+        self.assertEqual(result['state'],'acknowledged');self.assertEqual(len(self.requests),requests)
+
+    def test_host_claim_receipt_retention_is_bounded_and_evicted_handles_do_not_execute(self):
+        review=self.claims[0].preview(self.operation());self.claims[0].submit(review['review_id']);state=self.claims[0]._load()
+        self.claims[0].preview(self.operation('OTHER'))
+        for index in range(256):
+            clone=json.loads(json.dumps(state));clone['review']['review_id']='receipt-'+str(index)
+            clone['review']['request']['request_id']='host-claim-receipt-'+str(index);clone['result']['request_id']=clone['review']['request']['request_id']
+            self.claims[0]._retain(clone)
+        self.assertEqual(len(self.claims[0]._receipts()),256)
+        self.assertNotIn(review['review_id'],[row['review_id'] for row in self.claims[0]._receipts()])
+        self.online=False;requests=len(self.requests)
+        with self.assertRaises(StoreError):self.claims[0].confirm(review['review_id'])
+        self.assertEqual(len(self.requests),requests)
+
+    def test_confirm_rejects_unattempted_principal_mismatch_without_sending(self):
+        review=self.claims[0].preview(self.operation());self.online=False
+        with self.assertRaises(ApiError):self.claims[0].submit(review['review_id'])
+        self.online=True;self.tokens[0]=self.tokens[1];requests=len(self.requests)
+        result=self.claims[0].confirm(review['review_id'])
+        self.assertEqual(result['state'],'rejected');self.assertTrue(result['not_applied']);self.assertEqual(len(self.requests),requests)
+
+    def test_attempted_principal_mismatch_stays_uncertain_until_original_access_restored(self):
+        review=self.claims[0].preview(self.operation());original=self.tokens[0];self.lose=True
+        with self.assertRaises(ApiError):self.claims[0].submit(review['review_id'])
+        self.tokens[0]=self.tokens[1];requests=len(self.requests)
+        with self.assertRaises(StoreError):self.claims[0].confirm(review['review_id'])
+        self.assertTrue(self.claims[0].status()['pending']);self.assertEqual(len(self.requests),requests)
+        self.tokens[0]=original;self.assertEqual(self.claims[0].confirm(review['review_id'])['state'],'acknowledged')
+        self.assertEqual(len(self.host.read_v1('claims',self.project)['items']),1)
+
+    def test_pre_ledger_acknowledged_state_backfills_typed_confirmation(self):
+        review=self.claims[0].preview(self.operation());self.claims[0].submit(review['review_id'])
+        self.claims[0].receipts_path.unlink();self.online=False;requests=len(self.requests)
+        result=self.claims[0].confirm(review['review_id'])
+        self.assertTrue(result['historical_only']);self.assertEqual(result['command_receipt']['review_id'],review['review_id'])
+        self.assertEqual(len(self.claims[0]._receipts()),1);self.assertEqual(len(self.requests),requests)
+
+    def test_invalid_attempt_marker_cannot_reject_an_applied_claim(self):
+        review=self.claims[0].preview(self.operation());self.lose=True
+        with self.assertRaises(ApiError):self.claims[0].submit(review['review_id'])
+        state=self.claims[0]._load();original=self.tokens[0];self.tokens[0]=self.tokens[1];requests=len(self.requests)
+        for marker in (0,1,None,'false',[]):
+            broken=json.loads(json.dumps(state));broken['transport_attempted']=marker
+            self.claims[0].path.write_text(json.dumps(broken),encoding='utf-8')
+            with self.assertRaises(StoreError) as error:self.claims[0].confirm(review['review_id'])
+            self.assertEqual(error.exception.status,503);self.assertEqual(len(self.requests),requests)
+        self.assertEqual(len(self.host.read_v1('claims',self.project)['items']),1)
+        self.tokens[0]=original
+
+    def test_legacy_missing_attempt_marker_remains_unknown_until_exact_replay(self):
+        review=self.claims[0].preview(self.operation());self.lose=True
+        with self.assertRaises(ApiError):self.claims[0].submit(review['review_id'])
+        state=self.claims[0]._load();state.pop('transport_attempted');self.claims[0].path.write_text(json.dumps(state),encoding='utf-8')
+        original=self.tokens[0];self.tokens[0]=self.tokens[1]
+        with self.assertRaises(StoreError):self.claims[0].confirm(review['review_id'])
+        self.assertTrue(self.claims[0].status()['pending'])
+        self.tokens[0]=original;self.assertEqual(self.claims[0].confirm(review['review_id'])['state'],'acknowledged')
+        self.assertEqual(len(self.host.read_v1('claims',self.project)['items']),1)
 
     def test_competing_claims_and_overlapping_paths_are_rejected(self):
         review=self.claims[0].preview(self.operation(reserved_paths=['tools/source.py']))

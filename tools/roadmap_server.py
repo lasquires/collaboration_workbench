@@ -22,6 +22,7 @@ from roadmap_schema import SCHEMA_VERSION
 import workspace_auth
 from workspace_sync_service import WorkspaceSyncService
 from workspace_live_service import WorkspaceLiveService
+from workspace_live_ui import WorkspaceLiveUI
 from workspace_live_client import LiveConflict
 from roadmap_cli import ApiError as LiveApiError
 from workspace_sync import SyncConflict,PrivacyBlocked
@@ -163,10 +164,10 @@ def transact(payload: object) -> dict:
         raise RoadmapError(exc.status, str(exc)) from exc
 
 
-def workspace_read(parsed):
+def workspace_read(parsed,*,ui_actor_id=None):
     """Strict versioned read adapter; project selection is never implicit."""
     params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
-    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id", "merge_id", "repository_id", "portable", "compensation_id", "subject_type", "subject_id", "manifest_id", "key", "source_sha256", "disclosure_id"}
+    allowed = {"project_id", "limit", "cursor", "depth", "after", "principal_id", "document_id", "task_id", "ancestor_id", "order", "state", "survivor_id", "absorbed_id", "merge_id", "repository_id", "portable", "compensation_id", "subject_type", "subject_id", "manifest_id", "key", "source_sha256", "disclosure_id", "offset", "review_id", "side"}
     if set(params) - allowed or any(len(values) != 1 for values in params.values()):
         raise RoadmapError(400, "Unknown or duplicate workspace parameter")
     values = {key: item[0] for key, item in params.items()}
@@ -174,7 +175,7 @@ def workspace_read(parsed):
     project_id = values.pop("project_id", None)
     options = {}
     for key, value in values.items():
-        if key in {"limit", "depth"}:
+        if key in {"limit", "depth", "offset"}:
             if not value.isascii() or not value.isdigit():
                 raise RoadmapError(400, "Invalid integer workspace parameter")
             value = int(value)
@@ -206,6 +207,14 @@ def workspace_read(parsed):
         if set(options)!={'survivor_id','absorbed_id'}:
             raise RoadmapError(400,'Merge preview requires survivor_id and absorbed_id')
         return _store().merge_preview(project_id,options['survivor_id'],options['absorbed_id'])
+    if path in (['v1','live-ui-state'],['v1','live-ui-value']):
+        store=_store();actor=ui_actor_id or store.read_v1('capabilities',project_id)['capabilities'].get('local_principal_id')
+        ui=WorkspaceLiveUI(WorkspaceLiveService(store),project_id,actor)
+        if path[-1]=='live-ui-state':
+            if set(options)-{'offset'}:raise RoadmapError(400,'Unsupported live review page parameter')
+            return ui.read(options.get('offset',0))
+        if not {'review_id','key','side'}<=set(options) or set(options)-{'review_id','key','side','offset'}:raise RoadmapError(400,'Expected scoped live value selector')
+        return ui.value(options['review_id'],options['key'],options['side'],options.get('offset',0))
     if path==['v1','live-status']:
         if options:raise RoadmapError(400,'Live status accepts only project_id')
         return WorkspaceLiveService(_store()).read(project_id)
@@ -323,8 +332,8 @@ class Handler(BaseHTTPRequestHandler):
             raise RoadmapError(403, 'Project access denied')
 
     def _shared_read(self, parsed, principal):
-        if parsed.path=='/v1/task-sharing-original' and not principal['is_owner']:
-            raise RoadmapError(403,'Private original requires host owner credential')
+        if (parsed.path=='/v1/task-sharing-original' or parsed.path.startswith('/v1/live-ui-')) and not principal['is_owner']:
+            raise RoadmapError(403,'Private review data requires host owner credential')
         if parsed.path == '/v1/projects':
             result = workspace_read(parsed)
             if not principal['is_owner']:
@@ -343,9 +352,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path in ('/v1/inbox','/v1/subscriptions','/v1/feedback') and 'principal_id' not in params:
             params['principal_id']=[principal['principal_id']]
             parsed=parsed._replace(query=urllib.parse.urlencode(params,doseq=True))
-        result = workspace_read(parsed)
+        result = workspace_read(parsed,ui_actor_id=principal['principal_id']) if parsed.path.startswith('/v1/live-ui-') else workspace_read(parsed)
         if len(parts) == 4 and parts[1] == 'projects' and parts[3] == 'capabilities':
-            result['capabilities'].update({'authenticated': True,
+            result['capabilities'].update({'authenticated': True,'host_owner':principal['is_owner'],
                 'local_principal_id': principal['principal_id'],
                 'granted': ['contribute', 'review', 'manage_claims', 'manage_projects']
                            if principal['is_owner'] else principal['capabilities']})
@@ -489,7 +498,7 @@ class Handler(BaseHTTPRequestHandler):
                 if exact not in {"true", "false"}:
                     raise RoadmapError(400, "Exact must be true or false")
                 self._json(200, variable_occurrences(params.get("query", [""])[0], exact == "true"))
-            elif parsed.path in {'/assets/workspace-repositories.js','/assets/workspace-access.js','/assets/workspace-sharing.js','/assets/workspace-navigation.js','/assets/workspace-layout.js'} and not parsed.query:
+            elif parsed.path in {'/assets/workspace-repositories.js','/assets/workspace-access.js','/assets/workspace-sharing.js','/assets/workspace-navigation.js','/assets/workspace-layout.js','/assets/workspace-live.js'} and not parsed.query:
                 body=(ROOT/'docs'/parsed.path.rsplit('/',1)[-1]).read_bytes()
                 self.send_response(200);self.send_header('Content-Type','text/javascript; charset=utf-8')
                 self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(body)))
@@ -537,19 +546,28 @@ class Handler(BaseHTTPRequestHandler):
                     self._shared_write(parsed,payload,principal)
             if parsed.path.startswith('/v1/live-') and not parsed.query:
                 action=parsed.path.removeprefix('/v1/live-')
-                extra={'configure':{'enabled'},'join-preview':set(),'join':{'review','choices'},'sync':set(),'review':{'side'},'resolve':{'side','review','choices'},'claims-read':{'task_id'},'claims-preview':{'operation'},'claims-submit':{'review_id'}}
+                extra={'configure':{'enabled'},'join-preview':set(),'join':{'review','choices'},'sync':set(),'review':{'side'},'resolve':{'side','review','choices'},'claims-read':{'task_id'},'claims-preview':{'operation'},'claims-submit':{'review_id'},'claims-review':set(),'ui-preview':{'kind'},'ui-choices':{'review_id','offset','expected_draft_revision','request_id','choices'},'ui-prepare':{'review_id','expected_draft_revision','acknowledged'},'ui-submit':{'review_id','command_id'},'ui-discard':{'review_id'}}
                 if action not in extra or not isinstance(payload,dict):raise RoadmapError(400,'Invalid live connection action')
                 required={'project_id'}|extra[action];allowed=required|({'url','token_file'} if action=='configure' else {'cursor'} if action=='claims-read' else set())
                 if not required<=set(payload) or set(payload)-allowed:raise RoadmapError(400,'Invalid live connection request')
                 project=payload['project_id'];service=WorkspaceLiveService(_store())
                 try:
-                    if action=='configure':result=service.configure(project,enabled=payload['enabled'],url=payload.get('url'),token_file=payload.get('token_file'))
+                    if action.startswith('ui-'):
+                        actor=principal['principal_id'] if principal else _store().read_v1('capabilities',project)['capabilities'].get('local_principal_id')
+                        ui=WorkspaceLiveUI(service,project,actor)
+                        if action=='ui-preview':result=ui.preview(payload['kind'])
+                        elif action=='ui-choices':result=ui.choose(payload['review_id'],payload['offset'],payload['expected_draft_revision'],payload['request_id'],payload['choices'])
+                        elif action=='ui-prepare':result=ui.prepare(payload['review_id'],payload['expected_draft_revision'],payload['acknowledged'])
+                        elif action=='ui-submit':result=ui.submit(payload['review_id'],payload['command_id'])
+                        else:result=ui.discard(payload['review_id'])
+                    elif action=='configure':result=service.configure(project,enabled=payload['enabled'],url=payload.get('url'),token_file=payload.get('token_file'))
                     elif action=='join-preview':result=service.preview_join(project)
                     elif action=='join':result=service.join(project,payload['review'],payload['choices'])
                     elif action=='sync':result=service.sync_now(project)
                     elif action=='claims-read':result=service.claims_read(project,payload['task_id'],payload.get('cursor'))
                     elif action=='claims-preview':result=service.claims_preview(project,payload['operation'])
-                    elif action=='claims-submit':result=service.claims_submit(project,payload['review_id'])
+                    elif action=='claims-submit':result=service.claims_confirm(project,payload['review_id'])
+                    elif action=='claims-review':result=service.claims_review(project)
                     elif action=='review':result=service.review(project,payload['side'])
                     else:result=service.resolve(project,payload['side'],payload['review'],payload['choices'])
                 except LiveConflict as error:

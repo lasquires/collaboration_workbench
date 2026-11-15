@@ -61,6 +61,19 @@ class SharedHttpTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
 
+    def test_compact_live_review_routes_require_current_host_owner(self):
+        query='?project_id='+self.project
+        self.assertEqual(self.request('/v1/live-ui-state'+query)[0],401)
+        self.assertEqual(self.request('/v1/live-ui-state'+query,self.member_token)[0],403)
+        code,page=self.request('/v1/live-ui-state'+query,self.owner_token)
+        self.assertEqual(code,200,page);self.assertEqual(page['phase'],'idle')
+        self.assertEqual(self.request('/v1/live-ui-state'+query+'&offset=-1',self.owner_token)[0],400)
+        for action in ('ui-preview','ui-choices','ui-prepare','ui-submit','ui-discard','claims-review'):
+            self.assertEqual(self.request('/v1/live-'+action,self.member_token,{'project_id':self.project})[0],403)
+        for token,owner in ((self.owner_token,True),(self.member_token,False)):
+            code,caps=self.request('/v1/projects/'+self.project+'/capabilities',token)
+            self.assertEqual(code,200,caps);self.assertEqual(caps['capabilities']['host_owner'],owner)
+
     def test_task_disclosure_review_http_scope_and_permission(self):
         import uuid
         def write(actor,token,ops):
