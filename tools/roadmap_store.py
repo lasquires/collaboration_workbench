@@ -819,8 +819,24 @@ class RoadmapStore:
                 db.execute("INSERT INTO transactions VALUES(?,?,?)", (request_id, digest, _json(result)))
                 db.commit()
                 return result
-            except Exception:
+            except Exception as error:
+                had_transaction=db.in_transaction
                 db.rollback()
+                # Only an actual scoped/global rollback can prove rejection.
+                # A prior committed request, revoked access or a failure while
+                # writing the HTTP response must remain an uncertain outcome.
+                if (had_transaction and _workspace and isinstance(error,StoreError)
+                        and error.status in (400,404,409,422)
+                        and _workspace['payload'].get('concurrency_mode','global')=='global'):
+                    try:
+                        committed=db.execute('SELECT 1 FROM transactions WHERE request_id=?',(request_id,)).fetchone()
+                        if committed is None:
+                            envelope=_workspace['payload']
+                            error.transaction_rejection={'project_id':envelope['project_id'],
+                                'principal_id':envelope['actor']['principal_id'],'request_id':request_id,
+                                'expected_revision':envelope['expected_revision'],'state':'not_applied'}
+                    except sqlite3.Error:
+                        pass  # Without the log check, no not-applied proof exists.
                 raise
 
     def _operate(self, tasks, links, operation, actor):
