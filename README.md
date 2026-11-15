@@ -57,7 +57,8 @@ separate from committed evidence. Optional live-service bearer access,
 TLS startup, project-scoped collaborator credentials and browser sign-in are
 implemented; see [self-hosting](docs/self-hosting.md). Opt-in batched
 [Git sharing and field conflict review](docs/git-sharing.md) are implemented.
-Live/offline reconnect and explicit host-claim APIs are implemented.
+Live/offline reconnect and explicit host-claim APIs are implemented. Reviewed live
+data commands retain private replay receipts across lost replies and restart.
 [Explicit record concurrency](docs/record-concurrency.md) lets supported unrelated
 edits proceed with scoped revision guards. [Reviewed merge compensation](docs/merge-compensation.md) is implemented through
 the scoped API. Project-scoped task imports preserve repeated labels across

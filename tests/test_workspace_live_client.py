@@ -34,7 +34,7 @@ class LiveClientTests(unittest.TestCase):
             def requester(url,path,payload=None,*,token_file=None,credential=token,actor=principal):
                 if not self.online:raise ApiError(0,'offline')
                 if path.endswith('/capabilities'):
-                    result=self.host.read_v1('capabilities',self.project);result['capabilities']['local_principal_id']=actor;return result
+                    result=self.host.read_v1('capabilities',self.project);result['capabilities'].update(local_principal_id=actor,authenticated=True,granted=['contribute']);return result
                 params=parse_qs(urlsplit(path).query)
                 if path.startswith('/v1/exchange-export'):
                     return self.host.exchange_preview(self.project,ancestor_id=params.get('ancestor_id',[None])[0],portable=True)
@@ -188,8 +188,10 @@ class LiveClientTests(unittest.TestCase):
         client.store.transact_v1=lost_response
         with self.assertRaises(StoreError):client.join(review,choices)
         with self.assertRaises(LiveConflict):client.preview_join()
-        with self.assertRaises(LiveConflict):client.join(review,choices)
-        self.assertEqual(client.sync_once()['state'],'current')
+        changed=json.loads(json.dumps(review));changed['local_revision']='different:1'
+        with self.assertRaises(LiveConflict):client.join(changed,choices)
+        result=client.join(review,choices)
+        self.assertEqual(result['state'],'current');self.assertEqual(result['reviewed_command']['state'],'acknowledged')
         self.assertEqual(packets[0],packets[-1])
 
     def test_host_snapshot_hash_is_validated_before_local_mutation(self):

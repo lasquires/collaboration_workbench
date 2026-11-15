@@ -134,3 +134,24 @@ Retries require the original authenticated principal and host installation.
 Credentials and lease state never enter Git exchange, and these operations do not
 alter local-only claims. The background data worker never silently acquires,
 renews, or retries a host lease.
+
+
+## Recover reviewed live data commands
+
+Exact reviewed joins and host/local conflict resolutions can be retried after a
+lost local-service response or restart. The client binds each command to its
+exact review and field choices, authenticated host principal and host installation.
+A pending retry resumes its original durable transaction request; it does not
+mint a second write. Completed replay returns `reviewed_command` with its digest,
+kind and `state: acknowledged`, alongside the current connection status. Current
+local contribution and authenticated host access are checked again before replay.
+
+Host acknowledgment can coexist with a remaining local conflict or offline pull.
+It confirms the reviewed host command, not completion of all data reconciliation
+and never ownership of a live lease. Malformed or mismatched remote transaction
+success responses remain uncertain and preserve the original request for retry.
+The latest256 reviewed-command receipts stay in private app state and never enter
+Git exchange. Older replay fails closed under the existing base/operation guards;
+changed choices require a fresh explicit review. Background data synchronization
+may finish an already prepared command but never prepares new review choices or
+acquires a host claim.

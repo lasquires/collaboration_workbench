@@ -6,6 +6,7 @@ never database files, credentials, local bindings or live leases.
 import hashlib
 import json
 import os
+import re
 import tempfile
 import threading
 import uuid
@@ -67,6 +68,9 @@ class WorkspaceLiveClient:
             state=json.loads(self.path.read_text(encoding='utf-8'))
             if state.get('format')=='workbench-private-json-state':state=self.documents.thaw(state)
             if state['binding']!=self.binding or state['version']!=1:raise ValueError()
+            receipts=state.get('review_receipts',[])
+            if not isinstance(receipts,list) or len(receipts)>256 or len({self._validate_command(row) for row in receipts})!=len(receipts):raise ValueError()
+            if isinstance(state.get('outbox'),dict) and 'reviewed_command' in state['outbox']:self._validate_command(state['outbox']['reviewed_command'])
             return state
         except (ValueError,KeyError,OSError):raise ValueError('Private live-client state is incompatible') from None
 
@@ -128,6 +132,69 @@ class WorkspaceLiveClient:
         return {'project_id':self.project_id,'actor':{'principal_id':principal},'request_id':request_id,
                 'expected_revision':revision,'operations':[operation]}
 
+    @staticmethod
+    def _validate_command(command):
+        if not isinstance(command,dict) or set(command)!={'id','kind','remote_actor','remote_store'}:raise ValueError('Invalid reviewed command')
+        if not isinstance(command['id'],str) or not re.fullmatch('[0-9a-f]{64}',command['id']) or command['kind'] not in ('join','host','local'):raise ValueError('Invalid reviewed command identity')
+        if any(not isinstance(command[key],str) or not 0<len(command[key])<=200 for key in ('remote_actor','remote_store')):raise ValueError('Invalid reviewed command binding')
+        return command['id']
+
+    def _review_command(self,kind,review,choices):
+        # Receipt replay still needs current local membership and host access.
+        with self.store._connection() as db:
+            member=db.execute('SELECT m.capabilities_json FROM project_members m JOIN principals p ON p.id=m.principal_id WHERE m.project_id=? AND m.principal_id=? AND p.archived_at IS NULL',(self.project_id,self.actor_id)).fetchone()
+            local_store=db.execute('SELECT store_id FROM store_meta').fetchone()[0]
+        if not member or 'contribute' not in json.loads(member[0]):raise StoreError(403,'Current local contribution required')
+        result=self._call('/v1/projects/'+self.project_id+'/capabilities')
+        caps=result.get('capabilities',{}) if isinstance(result,dict) else {}
+        if (not isinstance(result,dict) or result.get('project_id')!=self.project_id or not isinstance(caps,dict) or caps.get('authenticated') is not True
+                or not isinstance(caps.get('granted'),list) or 'contribute' not in caps['granted']
+                or not isinstance(result.get('revision'),str) or ':' not in result['revision']):
+            raise LiveConflict({'reason':'Reviewed live commands require current authenticated scoped contribution'})
+        command={'id':exchange.research.digest({'kind':kind,'review':review,'choices':choices}),'kind':kind,
+                 'remote_actor':caps.get('local_principal_id'),'remote_store':result['revision'].split(':',1)[0]}
+        self._validate_command(command)
+        if command['remote_store']==local_store:raise LiveConflict({'reason':'Use this installation directly'})
+        return command
+
+    def _command_result(self,command,result=None):
+        state=self._load()
+        receipt=next((row for row in state.get('review_receipts',[]) if row['id']==command['id']),None)
+        if receipt is None:return result
+        if receipt!=command:raise LiveConflict({'reason':'Reviewed command belongs to another authenticated host principal or installation'})
+        return {**self.status(),'reviewed_command':{'id':command['id'],'kind':command['kind'],'state':'acknowledged'}}
+
+    def _run_reviewed(self,command,action):
+        try:result=action()
+        except LiveConflict:
+            confirmed=self._command_result(command)
+            if confirmed is None:raise
+            return confirmed
+        return self._command_result(command,result)
+
+    def _remote_transaction(self,payload):
+        result=self._call('/v1/transactions',payload)
+        if (not isinstance(result,dict) or result.get('request_id')!=payload['request_id']
+                or not isinstance(result.get('revision'),str) or not isinstance(result.get('changed_records'),list)):
+            raise ApiError(0,'Host transaction acknowledgment did not match the durable request')
+        return result
+
+    def _resume_command(self,state,command):
+        receipt=self._command_result(command)
+        if receipt is not None:return receipt
+        previous=(state.get('outbox') or {}).get('reviewed_command')
+        if previous and previous['id']==command['id']:
+            if previous!=command:raise LiveConflict({'reason':'Pending reviewed command belongs to another authenticated host principal or installation'})
+            return self._run_reviewed(command,self.sync_once)
+        return None
+
+    @staticmethod
+    def _remember_command(state,job):
+        command=job.get('reviewed_command')
+        if command is not None:
+            receipts=[row for row in state.get('review_receipts',[]) if row['id']!=command['id']]
+            state['review_receipts']=(receipts+[command])[-256:]
+
     def preview_join(self):
         with self.lock:
             current=self._load()
@@ -138,14 +205,16 @@ class WorkspaceLiveClient:
     def join(self,review,choices):
         with self.lock:
             state=self._load()
+            command=self._review_command('join',review,choices);replayed=self._resume_command(state,command)
+            if replayed is not None:return replayed
             if state['base'] is not None or state['outbox'] is not None:raise LiveConflict({'reason':'Retry the existing join or pending operation before creating another join'})
             bundle=self._remote()
             if bundle['id']!=review['bundle']['id']:raise LiveConflict({'reason':'Host changed since join preview'})
             identity=str(uuid.uuid4())
-            state['outbox']={'id':identity,'phase':'apply-local','incoming':bundle,'joining':True,
+            state['outbox']={'id':identity,'phase':'apply-local','incoming':bundle,'joining':True,'reviewed_command':command,
                 'local_request':self._payload('live-join-'+identity,review['local_revision'],{'op':'import_bundle','bundle':bundle,'choices':choices},self.actor_id)}
             self._save(state)
-            return self._drain(state)
+            return self._run_reviewed(command,lambda:self._drain(state))
 
     def _local_plan(self,state,job,bundle):
         preview=self.store.exchange_preview(self.project_id,bundle=bundle)
@@ -174,7 +243,7 @@ class WorkspaceLiveClient:
                         raise LiveConflict({'reason':'Host credential identity changed'})
                     job['remote_actor']=actor
                     job['remote_request']=self._payload('live-base-'+job['id']+'-'+uuid.uuid4().hex,caps['revision'],{'op':'register_exchange_snapshot','bundle':state['base']},job['remote_actor']);self._save(state)
-                self._call('/v1/transactions',job['remote_request']);job.pop('remote_request',None);job['phase']='preview-host';self._save(state)
+                self._remote_transaction(job['remote_request']);job.pop('remote_request',None);job['phase']='preview-host';self._save(state)
             elif phase=='preview-host':
                 preview=self._call('/v1/exchange-preview',{'project_id':self.project_id,'bundle':job['outgoing']})
                 conflicts=[change for change in preview['preview']['changes'] if any(field['conflict'] for field in change['fields'].values())]
@@ -184,10 +253,13 @@ class WorkspaceLiveClient:
                 job['remote_request']=self._payload('live-push-'+job['id'],preview['revision'],{'op':'import_bundle','bundle':job['outgoing'],'choices':{}},job['remote_actor'])
                 job['phase']='post';self._save(state)
             elif phase=='post':
-                self._call('/v1/transactions',job['remote_request']);job['phase']='pull';self._save(state)
+                self._remote_transaction(job['remote_request'])
+                if job.get('reviewed_command',{}).get('kind')=='host':self._remember_command(state,job)
+                job['phase']='pull';self._save(state)
             elif phase=='pull':self._local_plan(state,job,self._remote(job['outgoing']['id']))
             elif phase=='apply-local':
                 self.store.transact_v1(job['local_request'])
+                self._remember_command(state,job)
                 state['base']=job['incoming'];state['outbox']=None;state['error']=None;state['state']='current';self._save(state)
                 if not self._same(self._export(state['base']['id']),state['base']):state['state']='pending';self._save(state)
                 return self.status()
@@ -218,15 +290,20 @@ class WorkspaceLiveClient:
 
     def resolve_host(self,review,choices):
         with self.lock:
-            state=self._load();job=state['outbox']
+            state=self._load()
+            command=self._review_command('host',review,choices);replayed=self._resume_command(state,command)
+            if replayed is not None:return replayed
+            job=state['outbox']
             if not job or job['phase']!='review-host' or job['id']!=review['operation_id']:raise LiveConflict({'reason':'Pending host operation changed'})
             current=self._call('/v1/exchange-preview',{'project_id':self.project_id,'bundle':job['outgoing']})
             if current['revision']!=review['revision'] or current['preview']!=review['preview']:
                 raise LiveConflict({'side':'host','reason':'Host changed since review','revision':current['revision'],'preview':current['preview']})
             selected=self._choices(current['preview'],choices)
+            if job.get('remote_actor') and job['remote_actor']!=command['remote_actor']:raise LiveConflict({'reason':'Pending operation belongs to another host principal'})
+            job['reviewed_command']=command
             job['remote_request']=self._payload('live-reviewed-'+str(uuid.uuid4()),current['revision'],{'op':'import_bundle','bundle':job['outgoing'],'choices':selected},job['remote_actor'])
             job['phase']='post';state.pop('last_http_status',None);state['state']='pending';self._save(state)
-            return self.sync_once()
+            return self._run_reviewed(command,self.sync_once)
 
     def review_local(self):
         with self.lock:
@@ -240,15 +317,20 @@ class WorkspaceLiveClient:
 
     def resolve_local(self,review,choices):
         with self.lock:
-            state=self._load();job=state['outbox']
+            state=self._load()
+            command=self._review_command('local',review,choices);replayed=self._resume_command(state,command)
+            if replayed is not None:return replayed
+            job=state['outbox']
             if not job or job['phase']!='review-local' or job['id']!=review['operation_id']:raise LiveConflict({'reason':'Pending local operation changed'})
             current=self.store.exchange_preview(self.project_id,bundle=job['incoming'])
             if current['revision']!=review['revision'] or current['preview']!=review['preview']:
                 raise LiveConflict({'side':'client','reason':'Local state changed since review','revision':current['revision'],'preview':current['preview']})
             selected=self._choices(current['preview'],choices)
+            if job.get('remote_actor') and job['remote_actor']!=command['remote_actor']:raise LiveConflict({'reason':'Pending operation belongs to another host principal'})
+            job['reviewed_command']=command
             job['local_request']=self._payload('live-local-reviewed-'+str(uuid.uuid4()),current['revision'],{'op':'import_bundle','bundle':job['incoming'],'choices':selected},self.actor_id)
             job['phase']='apply-local';state.pop('last_local_conflict',None);state['state']='pending';self._save(state)
-            return self.sync_once()
+            return self._run_reviewed(command,self.sync_once)
 
     def sync_once(self):
         with self.lock:
