@@ -489,7 +489,7 @@ class Handler(BaseHTTPRequestHandler):
                 if exact not in {"true", "false"}:
                     raise RoadmapError(400, "Exact must be true or false")
                 self._json(200, variable_occurrences(params.get("query", [""])[0], exact == "true"))
-            elif parsed.path in {'/assets/workspace-repositories.js','/assets/workspace-access.js','/assets/workspace-sharing.js'} and not parsed.query:
+            elif parsed.path in {'/assets/workspace-repositories.js','/assets/workspace-access.js','/assets/workspace-sharing.js','/assets/workspace-navigation.js'} and not parsed.query:
                 body=(ROOT/'docs'/parsed.path.rsplit('/',1)[-1]).read_bytes()
                 self.send_response(200);self.send_header('Content-Type','text/javascript; charset=utf-8')
                 self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(body)))

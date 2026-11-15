@@ -1,0 +1,46 @@
+const assert=require('node:assert/strict');
+const sharing=require('../docs/workspace-sharing.js');
+const clone=x=>JSON.parse(JSON.stringify(x));
+(async()=>{
+ const values=new Map(),storage={getItem:k=>values.get(k)||null,setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)};
+ let context={projectId:'p',activePanel:'task-sharing'},failure=null,n=0;
+ const identity=JSON.stringify(['task','record_json','summary']);
+ const page={project_id:'p',revision:'store:1',review_digest:'digest',limit:20,cursor:null,next_cursor:'next',items:[{key:identity,task_id:'task',alias:'ALIAS',slot:'record_json',field:'summary',source_sha256:'a'.repeat(64),proposals:{redacted:{public_json:'"Safe <script>literal</script>"'}},approved:false}]};
+ const posts=[],paths=[];
+ const api=async(path,options)=>{paths.push(path);if(path.endsWith('/capabilities'))return{capabilities:{local_principal_id:'actor'}};
+  if(path==='/v1/transactions'){posts.push(options.body);if(failure)throw failure;const body=JSON.parse(options.body);return{request_id:body.request_id,revision:'store:2',changed_records:[{type:'task_sharing_review'}]}}return clone(page)};
+ const options={kind:'task',api,getContext:()=>context,storage,requirePersistence:true,requestId:()=>`task-${++n}`};
+ const session=sharing.createSession(options);await session.load();
+ assert.ok(paths.some(p=>p.startsWith('/v1/task-sharing-review?')),'task review uses task endpoint');
+ assert.deepEqual(session.state().choices,{});assert.throws(()=>session.choose(identity,'omitted'),/offered/);
+ session.choose(identity,'redacted');await assert.rejects(session.save(),/acknowledge/);session.acknowledge(true);
+ failure=Object.assign(Error('lost acknowledgment'),{status:503});await session.save();
+ const frozen=session.state().pendingBody,body=JSON.parse(frozen);
+ assert.equal(body.operations[0].op,'review_task_sharing');assert.equal(body.operations[0].choices[identity],'redacted');
+ assert.ok(!frozen.includes('literal'),'only choice identity and mode travel in the review request');
+ assert.equal(values.size,1);assert.ok(!values.has(sharing.RECOVERY_KEY),'task recovery is isolated from journal recovery');
+ const recovered=sharing.createSession(options);assert.equal(recovered.state().pendingBody,frozen);const count=posts.length;
+ await recovered.load();assert.equal(posts.length,count,'reload never automatically posts');
+ context={projectId:'p',activePanel:'questions'};await assert.rejects(recovered.save(),/sharing review/);
+ context={projectId:'p',activePanel:'task-sharing'};failure=Object.assign(Error('revoked'),{status:403});await recovered.save();assert.equal(recovered.state().pendingBody,frozen);
+ failure=null;await recovered.save();assert.equal(recovered.state().phase,'saved');assert.equal(posts.at(-1),frozen);assert.equal(values.size,0);
+ const stale=sharing.createSession(options);await stale.load();stale.choose(identity,'redacted');stale.acknowledge(true);failure=Object.assign(Error('stale'),{status:409});await stale.save();assert.equal(stale.state().phase,'stale');await assert.rejects(stale.save(),/fresh review/);failure=null;
+ const unsupported=clone(page);unsupported.items[0].proposals={};
+ const blocked=sharing.createSession({...options,api:async path=>path.endsWith('/capabilities')?{capabilities:{local_principal_id:'actor'}}:unsupported});await blocked.load();assert.throws(()=>blocked.choose(identity,'redacted'),/offered/);await assert.rejects(blocked.save(),/Choose/);
+ let resolveHidden,dirty=false;
+ const hidden=sharing.createSession({...options,api:async path=>path.endsWith('/capabilities')?{capabilities:{local_principal_id:'actor'}}:new Promise(r=>resolveHidden=r),onDirty:v=>{dirty=v}});
+ const loading=hidden.load();context.activePanel='sharing';dirty=true;resolveHidden(clone(page));await loading;assert.equal(dirty,true,'task review cannot clear a journal panel draft');
+ console.log('task sharing controller checks passed');
+})().catch(error=>{console.error(error);process.exitCode=1});
+
+(async()=>{
+ const values=new Map(),storage={getItem:k=>values.get(k)||null,setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)};
+ const page={project_id:'p',revision:'store:1',review_digest:'many',limit:20,cursor:null,items:Array.from({length:120},(_,i)=>({key:JSON.stringify(['task'+i,'record_json','summary']),proposals:{redacted:{public_json:'"safe"'}}}))};
+ const options={kind:'task',storage,getContext:()=>({projectId:'p'}),requestId:()=> 'many-fields',api:async(path,opts)=>{if(path.endsWith('/capabilities'))return{capabilities:{local_principal_id:'actor'}};if(opts)throw Object.assign(Error('lost'),{status:503});return page}};
+ const session=sharing.createSession(options);await session.load();for(const item of page.items)session.choose(item.key,'redacted');session.acknowledge(true);await session.save();
+ const pending=session.state().pendingBody;assert.ok(pending);assert.equal(sharing.createSession(options).state().pendingBody,pending,'120 field choices recover exactly');
+ const key=sharing.config('task').key,bad=JSON.parse(pending);bad.operations[0].choices.extra='redacted';values.set(key,JSON.stringify(bad));
+ assert.equal(sharing.createSession(options).state().phase,'recovery-error','over-limit recovered choices are rejected without posting');
+ bad.operations[0].choices={one:'omitted'};values.set(key,JSON.stringify(bad));assert.equal(sharing.createSession(options).state().phase,'recovery-error','task recovery cannot introduce an omission mode');
+ console.log('task sharing recovery bounds checks passed');
+})().catch(error=>{console.error(error);process.exitCode=1});

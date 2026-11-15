@@ -204,7 +204,11 @@ Historical `/api/tasks` and `/api/transaction` references are labeled explicitly
 as root-relative API routes, preserving their method and measured outcomes.
 Path-bearing structured evidence, acceptance and unknown authority fields cannot
 be concealed through an attempt disclosure. There is no omission mode for tasks.
-The dashboard approval controls for this new review are still pending.
+Open **Task sharing** in the dashboard to review the public proposals, inspect
+original fields on demand, choose each offered copy and acknowledge publication.
+No mode is selected by default. Unsupported fields stay disabled and block the
+page from being approved. Pages without blocked fields can still have a next
+task page.
 
 This does not rewrite the task's local `record_json` or `original_json`. Approved
 source values are retained in an immutable local vault with their content hashes.
@@ -230,3 +234,10 @@ can read `/v1/task-sharing-original` with `project_id`, the preview item's exact
 if current prose changed. Shared-service collaborator credentials cannot read
 this private vault endpoint. Original text is never included in review-page
 previews, public disclosures or portable bundles.
+
+Task review uses its own browser recovery entry, separate from journal sharing.
+The exact prepared transaction contains field identities and choices, not raw
+originals. Reload returns to the original project and Task sharing panel without
+posting; use **Retry exact same sharing request** to confirm an uncertain outcome.
+An uncertain outcome cannot be discarded. A confirmed409 requires a fresh review
+and new choices. Originals remain unchanged after review and compatible merges.

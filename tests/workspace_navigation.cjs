@@ -1,0 +1,12 @@
+const assert=require('node:assert/strict');
+const navigation=require('../docs/workspace-navigation.js');
+const values=new Map(),storage={getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value)};
+const first=navigation.create(storage),projects=[{id:'alpha'},{id:'beta'}];
+assert.equal(first.choose(projects),'alpha');first.remember('beta');
+assert.equal(navigation.create(storage).choose(projects),'beta','map and research keep project context');
+assert.equal(first.choose(projects,'alpha'),'alpha','explicit recovery/navigation selection takes precedence');
+assert.equal(first.choose([{id:'restricted'}]),'restricted','never select an unavailable project from browser state');
+assert.equal(first.choose([]),null);
+assert.equal(navigation.create({getItem(){throw Error('blocked')},setItem(){throw Error('blocked')}}).choose(projects),'alpha');
+assert.doesNotThrow(()=>navigation.create(null).remember('alpha'));
+console.log('workspace navigation checks passed');
