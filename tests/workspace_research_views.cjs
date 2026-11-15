@@ -78,6 +78,9 @@ class Element {
  assert.equal(renderer.state().draft.fields.evidence[0].artifact_version_id,'f');
  assert.equal(renderer.state().draft.fields.evidence[0].method,'','catalog selection cannot invent an observation method');
  assert.equal(renderer.state().draft.fields.claim,'Another authored edit','catalog selection preserves authored text');
+ await flatten(mount).find(n=>n.tagName==='button'&&n.textContent==='Discard draft').onclick();
+ assert.equal(renderer.state().draft,null,'local discard clears unsaved authored draft without a mutation');
+ assert.ok(!flatten(mount).some(n=>n.tagName==='form'),'local discard removes the authoring form');
  console.log('research renderer DOM checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 assert.equal(views.canResearch({capabilities:{authenticated:true,granted:['contribute']}},'review'),false,'known contributor-only access cannot start independent review');
@@ -99,4 +102,16 @@ assert.equal(views.canResearch({capabilities:{authenticated:true,granted:['contr
  assert.equal(calls.filter(c=>c.options?.method==='POST').length,1,'post-save refresh never creates another mutation');
  assert.equal(stored.size,0,'only confirmed receipt clears durable pending request');
  console.log('research confirmed-save context checks passed');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+(async()=>{
+ const doc={activeElement:null,createElement(tag){return new Element(tag,this);}},mount=new Element('main',doc),stored=new Map();let cleanupFails=true;const bodies=[];
+ const r=views.create({mount,document:doc,getContext:()=>({projectId:'p',principalId:'author',activePanel:'research'}),storage:{getItem:k=>stored.get(k)??null,setItem:(k,v)=>stored.set(k,v),removeItem(key){if(cleanupFails)throw Error('cleanup unavailable');stored.delete(key);}},api:async(path,options)=>{
+  if(options?.method==='POST'){bodies.push(options.body);const body=JSON.parse(options.body);return {project_id:'p',revision:'store:2',request_id:body.request_id,changed_records:[{type:'finding',id:body.operations[0].id}]};}
+  return {project_id:'p',revision:'store:1',items:[],next_cursor:null,capabilities:{authenticated:true,granted:['contribute']}};
+ }});
+ const all=n=>[n,...n.children.flatMap(all)];await r.load();await all(mount).find(n=>n.tagName==='button'&&n.textContent==='New finding').onclick();r.change('claim','Receipt saved; recovery cleanup blocked');await all(mount).find(n=>n.tagName==='form').onsubmit({preventDefault(){}});
+ assert.equal(r.state().phase,'saved-cleanup-error');assert.equal(r.state().draft,null);assert.ok(r.state().pendingBody);
+ assert.ok(all(mount).some(n=>n.tagName==='button'&&n.textContent==='Retry exact request'),'confirmed receipt with failed cleanup must retain an accessible exact retry control even after draft cleared');
+ cleanupFails=false;await all(mount).find(n=>n.tagName==='button'&&n.textContent==='Retry exact request').onclick();assert.equal(r.state().pendingBody,null);assert.equal(stored.size,0);assert.equal(bodies.length,2);assert.equal(bodies[1],bodies[0],'cleanup recovery retries exactly the original frozen bytes');
+ console.log('research cleanup recovery control checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

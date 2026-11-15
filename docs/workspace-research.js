@@ -215,7 +215,7 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   for(const [label,descriptor] of Object.entries(c.related||{}))parent.append(button('Read '+label,()=>browse(descriptor.resource,descriptor.params),state.busy));
  }
  function editor(parent,state){
-  const d=state.draft;if(!d)return;const f=d.fields,kind=d.kind;
+  const d=state.draft||(state.pendingBody?{kind:JSON.parse(state.pendingBody).operations[0].op,fields:{}}:null);if(!d)return;const f=d.fields,kind=d.kind;
   const form=node('form',undefined,'card');form.append(node('h3',kind.replaceAll('_',' ')),node('p','Authored assertions and independent review remain distinct from verified forensic evidence.','muted'));
   if(state.pendingBody){summary(form,'Frozen request awaiting confirmation',JSON.parse(state.pendingBody));form.append(button('Retry exact request',()=>confirmSave(JSON.parse(state.pendingBody).operations[0],true),state.busy));parent.append(form);return;}
   const finding=kind==='revise_finding',values=finding?f.fields:f;
