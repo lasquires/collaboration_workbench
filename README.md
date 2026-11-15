@@ -62,13 +62,18 @@ implemented. Paged conflict reviews keep full records in private service caches;
 compact browser handles recover exact commands across lost replies and restart.
 Historical confirmations are labeled separately from current synchronization or
 lease ownership. See the [dashboard live workflow](docs/self-hosting.md#use-the-dashboard-live-controls).
-Direct project-scoped finding, question and answer contexts expose current
+Direct project-scoped finding, question, answer and evidence-link contexts expose current
 revisions and paged history descriptors. Exact answer-support pages include reused
 finding citations with pinned source metadata; withdrawn support stays visible.
 Verified rolled-back global writes can return a request-bound `transaction_rejection`
 marker; authentication, unknown or postcommit response failures do not establish
-that an edit was not applied. Human finding/answer authoring controls remain in
-integration; see the [authoring plan](docs/superpowers/plans/2026-11-15-research-authoring.md).
+that an edit was not applied. The Findings & answers panel supports paged source selection, finding revisions,
+pinned answer proposals, independent review, explicit resolution and evidence
+withdrawal. Observation and question cards open that workspace; map task links
+carry validated task scope. Frozen pending writes survive reload and require exact
+retry confirmation. Authoring integration remains under verification for the
+remaining observation/task-link, recovery and mobile browser paths; see the
+[authoring plan](docs/superpowers/plans/2026-11-15-research-authoring.md).
 [Explicit record concurrency](docs/record-concurrency.md) lets supported unrelated
 edits proceed with scoped revision guards. [Reviewed merge compensation](docs/merge-compensation.md) is implemented through
 the scoped API. Project-scoped task imports preserve repeated labels across

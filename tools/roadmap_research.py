@@ -15,7 +15,7 @@ OPS = {'review_task_sharing', 'review_journal_sharing', 'register_root', 'bind_r
        'create_index_run', 'stage_batch', 'publish_run', 'create_question',
        'record_negative_search', 'import_variable_registry', 'revise_question', 'create_finding', 'revise_finding', 'archive_finding', 'restore_finding', 'set_evidence_state','create_answer','review_answer','resolve_question','set_question_state'}
 RESOURCES = {'task-sharing-original', 'task-sharing-review', 'journal-sharing-review', 'artifacts', 'artifact-versions', 'index-runs', 'occurrences',
-             'observations', 'questions', 'negative-searches', 'finding-context', 'question-context', 'answer-context', 'answer-support', 'findings', 'finding-revisions', 'evidence-links', 'evidence-changes', 'research-review-notices','answers','answer-reviews','question-resolutions','source-manifests'}
+             'observations', 'questions', 'negative-searches', 'finding-context', 'question-context', 'answer-context', 'evidence-context', 'answer-support', 'findings', 'finding-revisions', 'evidence-links', 'evidence-changes', 'research-review-notices','answers','answer-reviews','question-resolutions','source-manifests'}
 
 
 def canonical(value):
@@ -518,7 +518,7 @@ def read(db,resource,project,*,limit=None,cursor=None,**unused):
         except ImportError:
             import workspace_task_disclosure
         return workspace_task_disclosure.preview(db,project,limit=limit,cursor=cursor)
-    if resource in ('finding-context','question-context','answer-context','answer-support'):
+    if resource in ('finding-context','question-context','answer-context','evidence-context','answer-support'):
         try:
             from . import workspace_research_context
         except ImportError:

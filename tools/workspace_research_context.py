@@ -9,7 +9,7 @@ except ImportError:
     import workspace_answers as answers
     from roadmap_projection import API_VERSION,_coverage,_encode,_decode
 
-RESOURCES={'finding-context','question-context','answer-context','answer-support'}
+RESOURCES={'finding-context','question-context','answer-context','evidence-context','answer-support'}
 
 
 def _entity(row):
@@ -70,6 +70,12 @@ def read(db,resource,project,*,key=None,limit=None,cursor=None,subject_id=None,*
         if row is None:research.error(404,'Scoped finding context not found')
         entity=findings.describe(db,project,_entity(row));scope={'subject_type':'finding_revision','subject_id':entity['evidence_origin_id']}
         sections={'revisions':related('finding-revisions',subject_id=key),'evidence':related('evidence-links',**scope),'notices':related('research-review-notices',**scope)}
+    elif resource=='evidence-context':
+        kind='evidence';entity=_entity(research.scoped(db,'evidence_links',project,key))
+        source=db.execute('SELECT v.sha256,v.binary_build_id,v.availability,EXISTS(SELECT 1 FROM artifact_blobs b WHERE b.project_id=v.project_id AND b.sha256=v.sha256) AS local_bytes_available FROM artifact_versions v WHERE v.project_id=? AND v.id=?',(project,entity['artifact_version_id'])).fetchone()
+        if source is None:research.error(409,'Pinned source version is unavailable')
+        entity.update(source_sha256=source['sha256'],binary_build_id=source['binary_build_id'],availability=source['availability'],local_bytes_available=bool(source['local_bytes_available']))
+        sections={'changes':related('evidence-changes',subject_id=key)}
     elif resource=='question-context':
         kind='question';entity=_question(db,project,key)
         sections={'answers':related('answers',subject_id=key),'resolutions':related('question-resolutions',subject_id=key)}
@@ -77,5 +83,14 @@ def read(db,resource,project,*,key=None,limit=None,cursor=None,subject_id=None,*
         kind='answer';entity=answers.describe_answer(db,project,_entity(research.scoped(db,'answers',project,key)))
         sections={'support':related('answer-support',subject_id=key),'reviews':related('answer-reviews',subject_id=key),'notices':related('research-review-notices',subject_type='answer',subject_id=key)}
     context={'entity_type':kind,'entity':entity,'related':sections}
+    if kind=='evidence':
+        owner=None
+        if entity['subject_type']=='finding_revision':
+            row=db.execute('SELECT finding_id FROM finding_revisions WHERE project_id=? AND id=?',(project,entity['subject_id'])).fetchone()
+            if row:owner={'type':'finding','id':row['finding_id']}
+        elif entity['subject_type']=='answer':
+            row=db.execute('SELECT id FROM answers WHERE project_id=? AND id=?',(project,entity['subject_id'])).fetchone()
+            if row:owner={'type':'answer','id':row['id']}
+        context['owner']=owner
     if kind=='answer':context['question']=_question(db,project,entity['question_id'])
     return {**envelope,'next_cursor':None,'context':context}

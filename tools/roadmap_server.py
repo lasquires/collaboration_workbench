@@ -237,9 +237,9 @@ def workspace_read(parsed,*,ui_actor_id=None):
     if path==['v1','source-manifests']:
         if set(options)-{'manifest_id','limit','cursor'}:raise RoadmapError(400,'Unsupported source manifest parameter')
         return _store().read_v1('source-manifests',project_id,**options)
-    if len(path)==4 and path[1] in ('findings','questions','answers') and path[3]=='context':
+    if len(path)==4 and path[1] in ('findings','questions','answers','evidence-links') and path[3]=='context':
         if options:raise RoadmapError(400,'Research context route accepts only project scope')
-        resource={'findings':'finding-context','questions':'question-context','answers':'answer-context'}[path[1]]
+        resource={'findings':'finding-context','questions':'question-context','answers':'answer-context','evidence-links':'evidence-context'}[path[1]]
         return _store().read_v1(resource,project_id,key=urllib.parse.unquote(path[2]))
     if len(path)==2 and path[1] in {'finding-revisions','evidence-links','evidence-changes','research-review-notices','answers','answer-reviews','question-resolutions','answer-support'}:
         if set(options)-{'subject_type','subject_id','limit','cursor'}:raise RoadmapError(400,'Unsupported finding history parameter')
@@ -502,7 +502,7 @@ class Handler(BaseHTTPRequestHandler):
                 if exact not in {"true", "false"}:
                     raise RoadmapError(400, "Exact must be true or false")
                 self._json(200, variable_occurrences(params.get("query", [""])[0], exact == "true"))
-            elif parsed.path in {'/assets/workspace-repositories.js','/assets/workspace-access.js','/assets/workspace-sharing.js','/assets/workspace-navigation.js','/assets/workspace-layout.js','/assets/workspace-live.js'} and not parsed.query:
+            elif parsed.path in {'/assets/workspace-repositories.js','/assets/workspace-access.js','/assets/workspace-sharing.js','/assets/workspace-navigation.js','/assets/workspace-layout.js','/assets/workspace-live.js','/assets/workspace-research-session.js','/assets/workspace-research.js'} and not parsed.query:
                 body=(ROOT/'docs'/parsed.path.rsplit('/',1)[-1]).read_bytes()
                 self.send_response(200);self.send_header('Content-Type','text/javascript; charset=utf-8')
                 self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(body)))

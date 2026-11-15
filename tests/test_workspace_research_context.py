@@ -61,6 +61,18 @@ class ResearchContextTests(unittest.TestCase):
         self.assertEqual(reopened['state'],'investigating');self.assertFalse(reopened['resolution']['active'])
         self.assertGreater(reopened['record_revision'],resolved['record_revision'])
 
+    def test_exact_evidence_context_retains_owner_and_pinned_metadata_after_withdrawal(self):
+        links=self.store.read_v1('evidence-links',self.project,subject_id=self.finding['revision_id'])['items'];link=links[0]
+        version=self.store.read_v1('artifact-versions',self.project)['items'][0]
+        self.fixture.write({'op':'set_evidence_state','evidence_link_id':link['id'],'expected_state':'available','state':'retracted','reason':'Preserve this history'})
+        (self.fixture.root/'source.txt').write_text('A changed working copy',encoding='utf-8')
+        before=self.store.snapshot()['revision'];context=self.store.read_v1('evidence-context',self.project,key=link['id'])['context']
+        self.assertEqual(context['entity_type'],'evidence');self.assertEqual(context['entity']['state'],'retracted')
+        self.assertEqual(context['entity']['source_sha256'],version['sha256']);self.assertTrue(context['entity']['local_bytes_available'])
+        self.assertEqual(context['owner'],{'type':'finding','id':self.finding['id']})
+        self.assertEqual(context['related']['changes'],{'resource':'evidence-changes','params':{'project_id':self.project,'subject_id':link['id']}})
+        self.assertEqual(self.store.snapshot()['revision'],before)
+
     def test_missing_context_and_unsupported_options_fail_closed(self):
         for kind in ('finding-context','question-context'):
             with self.assertRaises(StoreError) as error:self.store.read_v1(kind,self.project,key='absent')
@@ -94,6 +106,12 @@ class AnswerContextTests(unittest.TestCase):
         self.assertTrue(all(row['source_sha256']==version['sha256'] and row['local_bytes_available'] for row in rows))
         self.assertTrue(all(row['subject_type']=='finding_revision' for row in rows))
         self.assertEqual(self.store.snapshot()['revision'],before)
+
+    def test_direct_answer_citation_has_exact_owner_context(self):
+        answer=self.fixture.propose(id='direct-support',evidence_link_ids=[],evidence=[self.fixture.fixture.support()])['id']
+        link=self.store.read_v1('evidence-links',self.project,subject_type='answer',subject_id=answer)['items'][0]
+        context=self.store.read_v1('evidence-context',self.project,key=link['id'])['context']
+        self.assertEqual(context['owner'],{'type':'answer','id':answer});self.assertEqual(context['entity']['id'],link['id'])
 
     def test_support_cursor_expires_and_withdrawn_reference_remains_visible(self):
         first=self.store.read_v1('answer-support',self.project,subject_id=self.answer,limit=20)
@@ -146,7 +164,8 @@ class ResearchContextHttpTests(unittest.TestCase):
         f.store.transact_v1({'project_id':f.project,'actor':{'principal_id':owner},'request_id':str(uuid.uuid4()),'expected_revision':f.store.snapshot()['revision'],'operations':[{'op':'register_root','id':'http-root','path':str(root)},{'op':'register_artifact','id':'http-source','root_id':'http-root','relative_path':'source.txt','kind':'source'},{'op':'register_artifact_version','artifact_id':'http-source'}]})
         version=f.store.read_v1('artifact-versions',f.project)['items'][0]['id']
         f.store.transact_v1({'project_id':f.project,'actor':{'principal_id':f.member_id},'request_id':str(uuid.uuid4()),'expected_revision':f.store.snapshot()['revision'],'operations':[{'op':'create_answer','id':'http-answer','question_id':'http-question','expected_question_revision':1,'claim':'Pinned HTTP source','evidence':[{'artifact_version_id':version,'locator':{'line':1},'method':'Read synthetic source','limitations':'Not native evidence'}]}]})
-        for path in ('/v1/answers/http-answer/context?project_id=','/v1/answer-support?subject_id=http-answer&limit=20&project_id='):
+        link=f.store.read_v1('evidence-links',f.project,subject_type='answer',subject_id='http-answer')['items'][0]
+        for path in ('/v1/evidence-links/'+link['id']+'/context?project_id=','/v1/answers/http-answer/context?project_id=','/v1/answer-support?subject_id=http-answer&limit=20&project_id='):
             code,result=f.request(path+f.project,f.member_token);self.assertEqual(code,200,result)
             self.assertEqual(result['project_id'],f.project)
             self.assertEqual(f.request(path+f.other,f.member_token)[0],403)
