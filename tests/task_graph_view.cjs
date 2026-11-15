@@ -46,6 +46,13 @@ assert.deepEqual(plain(model.outlineRoots({nodes:[
 ]})).map(node=>node.id), ['focus','island'],
   'accessible outline includes the visible root of a focused descendant branch');
 
+// Empty projects still need a baseline so untouched forms are clean and new drafts are protected.
+const emptyFields={id:'',title:'',summary:''};
+const emptyScope={graph:{nodes:[]},selected:null,baseDrafts:null,selectNode:model.selectNode,getDrafts:()=>({...emptyFields}),$ :()=>({textContent:''}),JSON};
+vm.runInNewContext(source.slice(source.indexOf('let detailKey=null;'),source.indexOf('function choose('))+';renderDetail();',emptyScope);
+assert.equal(emptyScope.baseDrafts,JSON.stringify(emptyFields));
+emptyFields.title='New task draft';assert.notEqual(emptyScope.baseDrafts,JSON.stringify(emptyFields),'empty-project creation draft is real dirty state');
+
 // Slice 2 model contract: navigation changes only the view, and API progress
 // indicators are derived from source fields rather than task status guesses.
 const workspaceFixture = JSON.parse(fs.readFileSync('tests/fixtures/research_workspace_v1.json', 'utf8'));
@@ -183,12 +190,12 @@ for (const html of [graphHtml, dashboardHtml]) {
   assert.match(html, /forensic/i, 'workflow and forensic states separated');
   assert.doesNotMatch(html, /\/api\/task-update|\/api\/claim|board\.board|data\.board/);
 }
-for (const fragment of ['Create island or nested task', 'Add task link', 'Append journal', 'Evidence paths', 'Claim task', 'Release claim'])
+for (const fragment of ['Create a task', 'Link tasks', 'Append journal', 'Evidence paths', 'Claim task', 'Release claim'])
   assert.ok(graphHtml.includes(fragment) || dashboardHtml.includes(fragment), `form/control present: ${fragment}`);
 assert.match(graphHtml, /role="button"/);
 assert.match(graphHtml, /onkeydown/);
 assert.match(graphHtml, /prefers-reduced-motion/);
-assert.match(graphHtml, /@media\(max-width:520px\)/);
+assert.match(graphHtml, /@media\(max-width:700px\)/);
 assert.match(dashboardHtml, /@media\(max-width:650px\)/);
 assert.match(graphHtml, /viewport changes only the viewport|Dragging never changes task relationships/);
 for (const operation of ['op:"create"', 'op:"update"', 'op:"claim"', 'op:"release"', 'op:"journal"', 'op:"add_link"'])
@@ -217,3 +224,52 @@ assert.match(graphHtml, /Load next page/);
   assert.match(scope.message,/No tasks|No island roots/,'empty project has an actionable message instead of perpetual loading');
   console.log('task graph UI fixture checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1});
+
+(async()=>{
+  for(const outcome of [200,409,'network']){
+    let settle;
+    const response=new Promise(resolve=>{settle=resolve});
+    const scope={projectId:'A',localPrincipalId:'principal',graph:{revision:'A:1'},conflictRows:null,
+      drafts:{journal:'A'},baseDrafts:'A',detailKey:'A',globalThis:{crypto:{randomUUID:()=> 'request'}},
+      canMutate:()=>true,v1TransactionPayload:()=>({}),root:{WorkspaceAccess:{options:(url,x)=>x}},
+      fetch:()=>response,notice:()=>{throw Error('stale notice')},capture:()=>{throw Error('stale capture')},
+      load:()=>{throw Error('stale load')},expandNeighborhood:()=>{throw Error('stale conflict')},JSON,Error};
+    vm.runInNewContext(source.slice(source.indexOf('async function transact('),source.indexOf('async function load(force=')),scope);
+    const pending=scope.transact([]);
+    scope.projectId='B';scope.drafts={journal:'B'};scope.baseDrafts='B';scope.detailKey='B';
+    settle({status:outcome,ok:outcome===200,json:async()=>{if(outcome==='network')throw Error('network');return {}}});
+    await pending;
+    assert.equal(scope.drafts.journal,'B');assert.equal(scope.baseDrafts,'B');assert.equal(scope.detailKey,'B');
+  }
+  console.log('late transaction project isolation checks passed');
+})().catch(error=>{console.error(error);process.exitCode=1});
+
+{
+ let captures=0;
+ const scope={vp:{setPointerCapture:()=>captures++,classList:{add:()=>{}}},drag:null,view:{x:0,y:0}};
+ vm.runInNewContext(source.slice(source.indexOf('vp.onpointerdown='),source.indexOf('vp.onpointermove=')),scope);
+ scope.vp.onpointerdown({button:0,pointerId:1,clientX:10,clientY:20,target:{closest:selector=>selector.includes('button')?{}:null}});
+ assert.equal(captures,0,'onboarding button pointer events must reach their click target');
+ scope.vp.onpointerdown({button:0,pointerId:2,clientX:10,clientY:20,target:{closest:()=>null}});
+ assert.equal(captures,1,'empty canvas remains draggable');
+}
+
+(async()=>{
+ let blocked=true,loads=0;
+ const scope={focusBack:[{root:'root',selected:'selected',view:{k:1,x:0,y:0},depth:2}],focusRoot:'child',selected:'child',view:{},depthLimit:3,
+ dirty:()=>blocked,capture:()=>{},notice:()=>{},$:()=>({value:''}),expandNeighborhood:async id=>{loads++;assert.equal(id,'root')},loadRootPage:async()=>{throw Error('unexpected collection load')}};
+ const start=source.indexOf('async function restoreFocus(');assert.ok(start>=0,'focus history shares a guarded API restore');
+ vm.runInNewContext(source.slice(start,source.indexOf('async function apiJson(',start)),scope);
+ await scope.restoreFocus(0);assert.equal(scope.focusRoot,'child');assert.equal(scope.focusBack.length,1);assert.equal(loads,0,'dirty breadcrumb cannot discard a draft');
+ blocked=false;await scope.restoreFocus(0);assert.equal(scope.focusRoot,'root');assert.equal(scope.selected,'selected');assert.equal(scope.focusBack.length,0);assert.equal(loads,1,'breadcrumb reloads the actual bounded root');
+ console.log('focus history draft and reload checks passed');
+})().catch(error=>{console.error(error);process.exitCode=1});
+
+{
+ let changed=true;
+ const scope={drafts:{journal:'stale cached note'},dirty:()=>changed,capture:()=>{scope.drafts={journal:'current note'}}};
+ const start=source.indexOf('function syncDrafts(');assert.ok(start>=0,'render synchronizes the draft cache with current dirty state');
+ vm.runInNewContext(source.slice(start,source.indexOf('function showConflict(',start)),scope);
+ scope.syncDrafts();assert.equal(scope.drafts.journal,'current note');
+ changed=false;scope.syncDrafts();assert.equal(Object.keys(scope.drafts).length,0,'a manually cleared draft cannot be resurrected by a later context render');
+}

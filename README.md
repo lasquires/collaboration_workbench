@@ -46,6 +46,11 @@ This is an actively developed prototype, not a complete release. Independent
 startup, project registration, tasks, evidence indexing, matching hints, documents,
 question editing, and guarded core merge/reversal APIs are implemented.
 
+The project map offers labeled branches and a radial overview, with a task outline
+and selected-task context beside the chart. Keyboard selection, bounded focus
+history and mobile browsing retain draft guards; view gestures do not write task
+relationships or acceptance. Map and research panels retain the selected project.
+
 Repository refresh pins committed source bytes and publishes bounded Unicode
 identifier-shaped indexes with explicit coverage. Dirty working copies remain
 separate from committed evidence. Optional live-service bearer access,
