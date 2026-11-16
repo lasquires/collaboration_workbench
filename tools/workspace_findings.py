@@ -3,9 +3,10 @@ import json
 import uuid
 from datetime import datetime,timezone
 try:
-    from . import roadmap_research as research
+    from . import roadmap_research as research, workspace_source_context as source_context
 except ImportError:
     import roadmap_research as research
+    import workspace_source_context as source_context
 
 OPS={'create_finding','revise_finding','archive_finding','restore_finding','set_evidence_state'}
 RESOURCES={'finding-revisions','evidence-links','evidence-changes','research-review-notices'}
@@ -75,6 +76,7 @@ def _scope(db,project,value):
         if not db.execute('SELECT 1 FROM tasks WHERE project_id=? AND uid=?',(project,value['task_id'])).fetchone():research.error(404,'Scoped finding task UUID not found')
     for field in ('identifier','namespace','scope_key'):
         if field in value:research.text(value[field],'finding '+field,2000)
+    source_context.validate_scope(db,project,value)
     return value
 
 
@@ -146,7 +148,7 @@ def apply_operation(db,project,principal,op,request_id):
         claim=research.text(op.get('claim'),'finding claim');scope=_scope(db,project,op.get('scope',{}))
         classification=research.text(op.get('classification','unclassified'),'authored classification',120)
         uncertainty=research.optional_text(op.get('uncertainty',''),'finding uncertainty',allow_none=False)
-        support=_support(db,project,op.get('evidence',[]));revision=str(uuid.uuid4())
+        support=_support(db,project,op.get('evidence',[]));source_context.validate_support(scope,support);revision=str(uuid.uuid4())
         db.execute('INSERT INTO findings VALUES(?,?,?,1,?,?,NULL)',(identity,project,revision,principal,now))
         db.execute('INSERT INTO finding_revisions VALUES(?,?,?,?,?,?,?,1,1,?,?)',(revision,project,identity,claim,research.canonical(scope),classification,uncertainty,principal,now))
         db.execute('INSERT INTO finding_revision_lineage VALUES(?,?,?)',(project,revision,revision));_links(db,project,revision,support,principal,now)
@@ -165,6 +167,7 @@ def apply_operation(db,project,principal,op,request_id):
         uncertainty=research.optional_text(fields.get('uncertainty',previous['uncertainty']),'finding uncertainty',allow_none=False)
         old_support=_existing_support(db,project,previous['id'])
         support=_support(db,project,fields['evidence']) if 'evidence' in fields else old_support
+        source_context.validate_support(scope,support)
         semantic=claim!=previous['claim'] or scope!=json.loads(previous['scope_json']) or classification!=previous['classification'] or support!=old_support
         editorial=uncertainty!=previous['uncertainty']
         if not semantic and not editorial:research.error(400,'Finding revision contains no changes')
@@ -298,6 +301,8 @@ def validate_bundle(db,project,records):
         if (row['subject_type']=='finding_revision' and row['subject_id'] not in revisions
                 or row['subject_type']=='finding' and row['subject_id'] not in findings):research.error(400,'Foreign research review notice')
         research.text(row['reason'],'research review reason',4000)
+
+    source_context.validate_bundle(db,project,records)
 
 
 def after_import(db,project,principal,request_id,preview):

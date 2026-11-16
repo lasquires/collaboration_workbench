@@ -150,3 +150,19 @@ assert.equal(views.canResearch({capabilities:{authenticated:true,granted:['contr
  assert.equal(calls.filter(c=>c.options?.method==='POST').length,0,'readable context never changes research state');
  console.log('readable research context checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
+
+assert.equal(typeof views.derivationSeed,'function','source history authors derivations using ordinary finding records');
+const derived=views.derivationSeed({id:'child',project_id:'p'},'task');
+assert.deepEqual(derived.scope,{artifact_version_id:'child',task_id:'task',derivation:{format:'workbench-derived-source/v1',parent_version_id:''}});
+assert.equal(derived.evidence[0].method,'','a source catalog selection never invents how derivation was established');
+assert.equal(derived.claim,'','derivation assertion remains explicitly authored');
+assert.throws(()=>views.buildFindingOperation('create_finding',{...derived,evidence:[support]}),/parent|derivation/i,'typed source assertions need an exact parent');
+assert.equal(typeof views.buildNegativeSearchOperation,'function');
+const searchFields={id:'negative',artifact_version_id:'child',query:'missingSymbol',method:'Exact text scan',searched_range:'Lines 1-20',coverage:{complete:false,excluded:['Other files']},outcome:'Not found in this bounded search'};
+const search=views.buildNegativeSearchOperation(searchFields,{id:'child',project_id:'p'});
+assert.deepEqual(search,{op:'record_negative_search',...searchFields});
+assert.throws(()=>views.buildNegativeSearchOperation({...searchFields,artifact_version_id:'other'},{id:'child',project_id:'p'}),/source|version|target/i);
+assert.throws(()=>views.buildNegativeSearchOperation({...searchFields,coverage:{complete:'false'}},{id:'child',project_id:'p'}),/coverage/i);
+assert.equal(views.operationForDraft({projectId:'p',selection:{context:{entity_type:'source',entity:{id:'child',project_id:'p'}}},draft:{kind:'record_negative_search',fields:searchFields}}).artifact_version_id,'child');
+assert.throws(()=>views.operationForDraft({projectId:'p',selection:{context:{entity_type:'source',entity:{id:'child',project_id:'foreign'}}},draft:{kind:'record_negative_search',fields:searchFields}}),/project|target/i);
+console.log('source criticism operation builder checks passed');

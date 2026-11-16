@@ -22,14 +22,33 @@ function findingSeed(observation={},taskId=null){
  const evidence=observation.artifact_version_id?[{artifact_version_id:observation.artifact_version_id,locator:copy(observation.locator_key||observation.locator||''),method:observation.provenance?.method||'',limitations:observation.provenance?.limitations||''}]:[];
  return {claim:'',classification:'unclassified',uncertainty:'',scope,supportMode:'replace',evidence};
 }
+const DERIVATION_FORMAT='workbench-derived-source/v1';
+function derivationSeed(source,taskId=null){
+ const version=identity(source?.id,'Derived source version'),scope={artifact_version_id:version,...(taskId?{task_id:identity(taskId,'Selected task UUID')}:{}),derivation:{format:DERIVATION_FORMAT,parent_version_id:''}};
+ return {claim:'',classification:'provenance-assertion',uncertainty:'',scope,supportMode:'replace',evidence:[{artifact_version_id:version,locator:'',method:'',limitations:''}]};
+}
+function checkDerivation(scope,evidence=null){
+ if(scope.derivation?.format!==DERIVATION_FORMAT)return;
+ const child=identity(scope.artifact_version_id,'Derived source version'),parent=identity(scope.derivation.parent_version_id,'Parent source version');
+ if(child===parent)throw Error('A derivation needs distinct parent and derived source versions.');
+ if(scope.derivation.index_run_id==='')delete scope.derivation.index_run_id;
+ if(scope.derivation.index_run_id!==undefined&&scope.derivation.index_run_id!==null)identity(scope.derivation.index_run_id,'Originating index run');
+ if(evidence){const versions=new Set(evidence.map(row=>row.artifact_version_id));if(!versions.has(child)||!versions.has(parent))throw Error('Cite both parent and derived source versions with their reviewed methods and limitations.');}
+}
+function buildNegativeSearchOperation(fields,source){
+ if(!source||identity(source.id,'Selected source version')!==fields.artifact_version_id)throw Error('Read the exact search source version before saving.');
+ if(!fields.coverage||typeof fields.coverage!=='object'||Array.isArray(fields.coverage)||typeof fields.coverage.complete!=='boolean')throw Error('Choose explicit search coverage.');
+ return {op:'record_negative_search',id:identity(fields.id,'Search identity'),artifact_version_id:source.id,query:text(fields.query,'Search query'),method:text(fields.method,'Search method'),searched_range:text(fields.searched_range,'Searched range'),coverage:copy(fields.coverage),outcome:text(fields.outcome,'Search outcome')};
+}
 function buildFindingOperation(kind,fields,current=null){
  if(!['create_finding','revise_finding'].includes(kind))throw Error('Choose finding creation or revision.');
  const scope={...(current?.scope?copy(current.scope):{}),...(fields.scope?copy(fields.scope):{})};
  for(const key of ['artifact_version_id','occurrence_id','area_id','task_id','identifier','namespace','scope_key'])if(scope[key]==='')delete scope[key];
+ checkDerivation(scope);
  const values={claim:text(fields.claim,'Finding claim'),scope,classification:text(fields.classification,'Authored classification',120),uncertainty:typeof fields.uncertainty==='string'?fields.uncertainty:''};
- if(kind==='create_finding')return {op:kind,...(fields.id?{id:identity(fields.id)}:{}),...values,evidence:sourceSupport(fields.evidence||[])};
+ if(kind==='create_finding'){const evidence=sourceSupport(fields.evidence||[]);checkDerivation(scope,evidence);return {op:kind,...(fields.id?{id:identity(fields.id)}:{}),...values,evidence};}
  if(!current||current.archived_at)throw Error('Restore the archived finding before revising it.');
- if(fields.supportMode==='replace')values.evidence=sourceSupport(fields.evidence||[]);
+ if(fields.supportMode==='replace'){values.evidence=sourceSupport(fields.evidence||[]);checkDerivation(scope,values.evidence);}
  else if(fields.supportMode!=='keep')throw Error('Choose explicitly whether to keep or replace source support.');
  return {op:kind,finding_id:identity(current.id),expected_record_revision:revision(current),fields:values,rationale:text(fields.rationale,'Revision rationale',4000)};
 }
@@ -79,7 +98,7 @@ function operationForDraft(state,{latest=false,choices={}}={}){
  if(!draft)throw Error('Open an authored draft first.');
  const fields=copy(draft.fields), kind=draft.kind, entity=context?.entity;
  function target(key){
-  const expectedType={finding_id:'finding',question_id:'question',answer_id:'answer',evidence_link_id:'evidence'}[key];
+  const expectedType={finding_id:'finding',question_id:'question',answer_id:'answer',evidence_link_id:'evidence',artifact_version_id:'source'}[key];
   if(!entity||context.entity_type!==expectedType||entity.id!==fields[key]||(state.projectId&&entity.project_id!==state.projectId))throw Error('Read the exact draft target type and project context first.');
   return copy(entity);
  }
@@ -92,6 +111,7 @@ function operationForDraft(state,{latest=false,choices={}}={}){
   return copy(choices[key]==='draft'?authored:current);
  }
  if(kind==='create_finding')return buildFindingOperation(kind,fields);
+ if(kind==='record_negative_search')return buildNegativeSearchOperation(fields,target('artifact_version_id'));
  if(kind==='revise_finding'){
   const current=guarded(target('finding_id'),'expected_record_revision');
   const values={...fields.fields,rationale:fields.rationale,
@@ -309,6 +329,6 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
  render(session.state());
  return {...session,open:async(type,id)=>{related=null;await session.open(type,id);},seedFinding:(observation,taskId)=>start('create_finding',findingSeed(observation,taskId||getContext()?.taskId))};
 }
-const api={canResearch,create,operationForDraft,findingSeed,buildFindingOperation,buildFindingStateOperation,buildAnswerOperation,buildReviewOperation,buildResolutionOperation,buildQuestionStateOperation,buildEvidenceOperation};
+const api={canResearch,create,operationForDraft,findingSeed,derivationSeed,buildNegativeSearchOperation,buildFindingOperation,buildFindingStateOperation,buildAnswerOperation,buildReviewOperation,buildResolutionOperation,buildQuestionStateOperation,buildEvidenceOperation};
 root.WorkspaceResearch=api;if(typeof module!=='undefined'&&module.exports)module.exports=api;
 })(typeof globalThis!=='undefined'?globalThis:this);
