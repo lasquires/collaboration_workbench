@@ -22,14 +22,33 @@ function findingSeed(observation={},taskId=null){
  const evidence=observation.artifact_version_id?[{artifact_version_id:observation.artifact_version_id,locator:copy(observation.locator_key||observation.locator||''),method:observation.provenance?.method||'',limitations:observation.provenance?.limitations||''}]:[];
  return {claim:'',classification:'unclassified',uncertainty:'',scope,supportMode:'replace',evidence};
 }
+const DERIVATION_FORMAT='workbench-derived-source/v1';
+function derivationSeed(source,taskId=null){
+ const version=identity(source?.id,'Derived source version'),scope={artifact_version_id:version,...(taskId?{task_id:identity(taskId,'Selected task UUID')}:{}),derivation:{format:DERIVATION_FORMAT,parent_version_id:''}};
+ return {claim:'',classification:'provenance-assertion',uncertainty:'',scope,supportMode:'replace',evidence:[{artifact_version_id:version,locator:'',method:'',limitations:''}]};
+}
+function checkDerivation(scope,evidence=null){
+ if(scope.derivation?.format!==DERIVATION_FORMAT)return;
+ const child=identity(scope.artifact_version_id,'Derived source version'),parent=identity(scope.derivation.parent_version_id,'Parent source version');
+ if(child===parent)throw Error('A derivation needs distinct parent and derived source versions.');
+ if(scope.derivation.index_run_id==='')delete scope.derivation.index_run_id;
+ if(scope.derivation.index_run_id!==undefined&&scope.derivation.index_run_id!==null)identity(scope.derivation.index_run_id,'Originating index run');
+ if(evidence){const versions=new Set(evidence.map(row=>row.artifact_version_id));if(!versions.has(child)||!versions.has(parent))throw Error('Cite both parent and derived source versions with their reviewed methods and limitations.');}
+}
+function buildNegativeSearchOperation(fields,source){
+ if(!source||identity(source.id,'Selected source version')!==fields.artifact_version_id)throw Error('Read the exact search source version before saving.');
+ if(!fields.coverage||typeof fields.coverage!=='object'||Array.isArray(fields.coverage)||typeof fields.coverage.complete!=='boolean')throw Error('Choose explicit search coverage.');
+ return {op:'record_negative_search',id:identity(fields.id,'Search identity'),artifact_version_id:source.id,query:text(fields.query,'Search query'),method:text(fields.method,'Search method'),searched_range:text(fields.searched_range,'Searched range'),coverage:copy(fields.coverage),outcome:text(fields.outcome,'Search outcome')};
+}
 function buildFindingOperation(kind,fields,current=null){
  if(!['create_finding','revise_finding'].includes(kind))throw Error('Choose finding creation or revision.');
  const scope={...(current?.scope?copy(current.scope):{}),...(fields.scope?copy(fields.scope):{})};
  for(const key of ['artifact_version_id','occurrence_id','area_id','task_id','identifier','namespace','scope_key'])if(scope[key]==='')delete scope[key];
+ checkDerivation(scope);
  const values={claim:text(fields.claim,'Finding claim'),scope,classification:text(fields.classification,'Authored classification',120),uncertainty:typeof fields.uncertainty==='string'?fields.uncertainty:''};
- if(kind==='create_finding')return {op:kind,...(fields.id?{id:identity(fields.id)}:{}),...values,evidence:sourceSupport(fields.evidence||[])};
+ if(kind==='create_finding'){const evidence=sourceSupport(fields.evidence||[]);checkDerivation(scope,evidence);return {op:kind,...(fields.id?{id:identity(fields.id)}:{}),...values,evidence};}
  if(!current||current.archived_at)throw Error('Restore the archived finding before revising it.');
- if(fields.supportMode==='replace')values.evidence=sourceSupport(fields.evidence||[]);
+ if(fields.supportMode==='replace'){values.evidence=sourceSupport(fields.evidence||[]);checkDerivation(scope,values.evidence);}
  else if(fields.supportMode!=='keep')throw Error('Choose explicitly whether to keep or replace source support.');
  return {op:kind,finding_id:identity(current.id),expected_record_revision:revision(current),fields:values,rationale:text(fields.rationale,'Revision rationale',4000)};
 }
@@ -79,7 +98,7 @@ function operationForDraft(state,{latest=false,choices={}}={}){
  if(!draft)throw Error('Open an authored draft first.');
  const fields=copy(draft.fields), kind=draft.kind, entity=context?.entity;
  function target(key){
-  const expectedType={finding_id:'finding',question_id:'question',answer_id:'answer',evidence_link_id:'evidence'}[key];
+  const expectedType={finding_id:'finding',question_id:'question',answer_id:'answer',evidence_link_id:'evidence',artifact_version_id:'source'}[key];
   if(!entity||context.entity_type!==expectedType||entity.id!==fields[key]||(state.projectId&&entity.project_id!==state.projectId))throw Error('Read the exact draft target type and project context first.');
   return copy(entity);
  }
@@ -92,6 +111,7 @@ function operationForDraft(state,{latest=false,choices={}}={}){
   return copy(choices[key]==='draft'?authored:current);
  }
  if(kind==='create_finding')return buildFindingOperation(kind,fields);
+ if(kind==='record_negative_search')return buildNegativeSearchOperation(fields,target('artifact_version_id'));
  if(kind==='revise_finding'){
   const current=guarded(target('finding_id'),'expected_record_revision');
   const values={...fields.fields,rationale:fields.rationale,
@@ -172,30 +192,54 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   if(row.scope&&typeof row.scope==='object'){
    value('Identifier',row.scope.identifier);value('Namespace',row.scope.namespace);value('Scope',row.scope.scope_key);value('Task',row.scope.task_id);value('Occurrence',row.scope.occurrence_id);value('Area',row.scope.area_id);value('Scoped source version',row.scope.artifact_version_id);
   }
+  if(row.candidate_type==='observation'){
+   value('Identifier',row.identifier,{required:true});value('Namespace',row.namespace,{required:true});value('Scope',row.scope_key,{required:true});
+   value('Observed value',row.value,{required:true});
+  }
   value('Task',row.owner_task_id);value('Area',row.area_id);
   value(type==='question'?'Current question state':'Recorded state',row.state);
   if(row.recorded_state!==undefined&&row.recorded_state!==row.state)value('Previously recorded question state',row.recorded_state);
   value('Evidence that would help',row.expected_evidence);value('Review state',row.review_state||row.evidence_review_state);value('Review acceptance boundary',row.acceptance_scope);
   if(row.resolution?.answer_id)value(row.resolution.active===true||row.resolution.active===1?'Selected answer':row.resolution.active===false||row.resolution.active===0?'Previously selected answer':'Recorded answer selection',row.resolution.answer_id);
   concerns('Review concerns',row.review_concerns);concerns('Resolution concerns',row.resolution_concerns);
+  if(type==='source'){value('Source version',row.id);value('Artifact path',row.relative_path);value('Source SHA-256',row.sha256,{required:true});value('Build',row.binary_build_id,{required:true});value('Source availability',row.availability);if(typeof row.local_bytes_available==='boolean')value('Bytes on this host',row.local_bytes_available?'Available':'Not cached');}
+  if(row.query!==undefined&&row.searched_range!==undefined){value('Search query',row.query);value('Search method',row.method);value('Searched range',row.searched_range);value('Search coverage',row.coverage?.complete===true?'Complete declared coverage':row.coverage?.complete===false?'Partial coverage':'Coverage not recorded');value('Search outcome',row.outcome);box.append(node('p','An unsuccessful search is not proof of absence. Coverage applies only to the recorded source and searched range.','muted'));}
   if(row.artifact_version_id!==undefined||type==='evidence'){
    box.append(node('h5','Source citation'));value('Source version',row.artifact_version_id,{required:true});
    value('Build',row.binary_build_id,{required:true});value('Source SHA-256',row.source_sha256||row.sha256,{required:true});
-   value('Locator',row.locator??row.locator_key,{required:true});value('Observation method',row.method,{required:true});value('Source limitations',row.limitations,{required:true});
+   value('Locator',row.locator??row.locator_key,{required:true});value('Observation method',row.method??row.provenance?.method,{required:true});value('Source limitations',row.limitations??row.provenance?.limitations,{required:true});
    value('Source availability',row.availability);if(typeof row.local_bytes_available==='boolean')value('Bytes on this host',row.local_bytes_available?'Available':'Not cached');
   }
-  value('Source lineage',row.derived_from);value('Recorded review outcome',row.outcome);value('Reason',row.reason||row.rationale);value('Contributor identity',row.created_by||row.reviewer_id);
+  const version=type==='source'?null:row.artifact_version_id||row.scope?.artifact_version_id;
+  if(version)box.append(button('Open cited source',()=>session.open('source',version),Boolean(session.state().draft||session.state().pendingBody||session.state().busy)));
+  value('Source lineage',row.derived_from);value(row.query!==undefined?'Recorded search outcome':'Recorded review outcome',row.outcome);value('Reason',row.reason||row.rationale);value('Contributor identity',row.created_by||row.reviewer_id);
   const raw=node('details');raw.append(node('summary','Full record and provenance'),node('pre',JSON.stringify(row,null,2),'research-record'));box.append(raw);parent.append(box);
  }
  async function browse(resource,params={},cursor=null){related=params.subject_id?{resource,params}:null;const page=await session.readPage(resource,params,cursor);const state=session.state();if(resource==='answer-reviews'&&state.draft?.kind==='review_answer'&&!state.pendingBody&&page){const ids=state.draft.fields.supersedes||[];const rows=[...(state.draft.fields._reviewRows||[]),...page.items].filter(row=>ids.includes(row.id)&&row.answer_id===state.draft.fields.answer_id&&row.reviewer_id===state.principalId);session.change('_reviewRows',Array.from(new Map(rows.map(row=>[row.id,row])).values()));}}
  function page(parent,resource,params={}){
   const p=session.state().pages[resource];if(!p)return;
   parent.append(node('p',`Showing ${p.items.length} records from one snapshot. ${p.next_cursor?'More records are available.':'End of this collection.'}`,'muted'));
+  if(resource==='source-derivations'){
+   parent.append(node('p','Authored derivation assertions retain their history. A shared recorded run indicates common origin; matching hashes alone establish neither dependence nor independence. Grouping covers only this page.','muted'));
+   const origins=new Map();for(const row of p.items)if(row.origin_run?.id)origins.set(row.origin_run.id,(origins.get(row.origin_run.id)||0)+1);
+   for(const [id,count] of origins)if(count>1)parent.append(node('p',`Shared recorded origin within this page: ${id} (${count} assertions)`));
+  }
   for(const row of p.items){const card=node('article',undefined,'card');card.append(node('strong',row.claim||row.text||row.reason||row.id));
-   const type=resource==='findings'?'finding':resource==='questions'?'question':resource==='answers'?'answer':['evidence-links','answer-support'].includes(resource)?'evidence':null;
+   const type=resource==='findings'?'finding':resource==='questions'?'question':resource==='answers'?'answer':resource==='artifact-versions'?'source':['evidence-links','answer-support'].includes(resource)?'evidence':null;
    if(resource==='answers'&&session.state().selection?.type==='question')card.append(button('Select reviewed answer for resolution',async()=>{const context=await session.inspectAnswer(row.id);if(!context)return;buildResolutionOperation(context.entity,context.question,'Check eligibility');start('resolve_question',{question_id:context.question.id,expected_record_revision:context.question.record_revision,answer_id:row.id,rationale:'',_answer:context.entity,_answerQuestionRevision:context.question.record_revision});},Boolean(session.state().draft||session.state().pendingBody)||row.review_state!=='accepted'));
    if(type)card.append(button('Open '+type,()=>session.open(type,row.id),Boolean(session.state().draft||session.state().pendingBody)));
    const state=session.state(),draft=state.draft,editable=draft&&!state.pendingBody&&!state.busy;
+   const assertion=editable&&['create_finding','revise_finding'].includes(draft.kind)?(draft.kind==='revise_finding'?draft.fields.fields:draft.fields):null;
+   if(assertion?.scope?.derivation?.format===DERIVATION_FORMAT){
+    const changeScope=scope=>draft.kind==='revise_finding'?session.change('fields',{...session.state().draft.fields.fields,scope}):session.change('scope',scope);
+    if(resource==='artifact-versions'&&row.id!==assertion.scope.artifact_version_id)card.append(button('Use as parent source',()=>{
+     const current=session.state().draft,values=current.kind==='revise_finding'?current.fields.fields:current.fields;
+     const evidence=copy(values.evidence||[]);if(!evidence.some(item=>item.artifact_version_id===row.id)){if(evidence.length>=100)throw Error('At most 100 source records may support this action.');evidence.push({artifact_version_id:row.id,locator:'',method:'',limitations:''});}
+     const scope={...values.scope,derivation:{...values.scope.derivation,parent_version_id:row.id}};
+     if(current.kind==='revise_finding'){session.change('_supportMode','replace');session.change('fields',{...values,scope,evidence});}else{session.change('scope',scope);session.change('evidence',evidence);}
+    }));
+    if(resource==='index-runs'&&row.state==='published')card.append(button('Use recorded origin run',()=>changeScope({...assertion.scope,derivation:{...assertion.scope.derivation,index_run_id:row.id}})));
+   }
    if(resource==='artifact-versions'&&editable&&['create_finding','revise_finding','create_answer'].includes(draft.kind))card.append(button('Use pinned version',()=>{
     const latest=session.state().draft,revise=latest.kind==='revise_finding';
     const values=revise?latest.fields.fields:latest.fields,rows=values.evidence||[];
@@ -221,6 +265,12 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
     }));
    }
    if(resource==='evidence-links'&&editable&&draft.kind==='set_evidence_state')card.append(button('Use as replacement support',()=>session.change('_replacement',copy(row)),row.state!=='available'||row.id===draft.fields.evidence_link_id));
+   if(resource==='source-derivations'){
+    card.append(node('p',row.is_current?'Current assertion':'Historical assertion'),node('p',row.archived?'Archived finding':'Active finding'),node('p','Recorded origin run: '+(row.origin_run?.id||'Not recorded')));
+    for(const [key,label] of [['available','Available'],['retracted','Retracted'],['superseded','Superseded']])card.append(node('p',label+' citations: '+(row.support_counts?.[key]??'Not included in this read')));
+    const locked=Boolean(state.draft||state.pendingBody||state.busy);card.append(button('Open parent source',()=>session.open('source',row.parent_version.id),locked),button('Open derived source',()=>session.open('source',row.child_version.id),locked),button('Open assertion finding',()=>session.open('finding',row.finding_id),locked));
+    presentRecord(card,'Parent source',row.parent_version,'source');presentRecord(card,'Derived source',row.child_version,'source');
+   }
    presentRecord(card,'Recorded details',row,type,true);parent.append(card);
   }
   parent.append(button('Restart collection',()=>browse(resource,params)),button('Next 20',()=>browse(resource,params,p.next_cursor),!p.next_cursor));
@@ -229,6 +279,8 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
  function actions(parent,state){
   const c=state.selection?.context,e=c?.entity;if(!e)return;
   const locked=Boolean(state.draft||state.pendingBody||state.busy)||!canResearch(state,'contribute');
+  if(c.entity_type==='source')parent.append(button('Record derivation assertion',()=>start('create_finding',derivationSeed(e,getContext()?.taskId)),locked));
+  if(c.entity_type==='source')parent.append(button('Record scoped search',()=>start('record_negative_search',{artifact_version_id:e.id,query:'',method:'',searched_range:'',coverage:{},outcome:''}),locked));
   if(c.entity_type==='finding'){
    parent.append(button('Revise finding',()=>start('revise_finding',{finding_id:e.id,expected_record_revision:e.record_revision,fields:{claim:e.claim,scope:copy(e.scope||{}),classification:e.classification,uncertainty:e.uncertainty||''},rationale:'',_supportMode:'keep'}),locked||Boolean(e.archived_at)));
    const kind=e.archived_at?'restore_finding':'archive_finding';parent.append(button(e.archived_at?'Restore finding':'Archive finding',()=>start(kind,{finding_id:e.id,expected_record_revision:e.record_revision,rationale:''}),locked));
@@ -252,6 +304,10 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   function save(key,value){if(finding&&['claim','scope','classification','uncertainty','evidence'].includes(key))session.change('fields',{...session.state().draft.fields.fields,[key]:value});else session.change(key,value);}
   if(['create_finding','revise_finding','create_answer'].includes(kind))field(form,'Claim',values.claim,v=>save('claim',v));
   if(['create_finding','revise_finding'].includes(kind)){
+   if(values.scope?.derivation?.format===DERIVATION_FORMAT){
+    form.append(node('p','Derived source: '+values.scope.artifact_version_id),node('p','Parent source: '+(values.scope.derivation.parent_version_id||'Choose explicitly')),node('p','Recorded origin run: '+(values.scope.derivation.index_run_id||'Not recorded')),node('p','A shared recorded run indicates common origin. Matching hashes alone do not establish dependence or independence. Cite both sources with reviewed methods and limits.','muted'));
+    form.append(button('Browse parent source versions',()=>{collection='artifact-versions';return browse('artifact-versions');},state.busy),button('Browse published origin runs',()=>{collection='index-runs';return browse('index-runs');},state.busy),button('Clear origin run',()=>{const scope=copy((finding?session.state().draft.fields.fields:session.state().draft.fields).scope);delete scope.derivation.index_run_id;save('scope',scope);},state.busy));
+   }
    field(form,'Scope',values.scope,v=>save('scope',v),{json:true});field(form,'Classification',values.classification,v=>save('classification',v));field(form,'Uncertainty',values.uncertainty,v=>save('uncertainty',v));
    if(finding)field(form,'Source support',f._supportMode||(Object.hasOwn(values,'evidence')?'replace':'keep'),v=>session.change('_supportMode',v),{select:['keep','replace']});
   }
@@ -266,6 +322,14 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
     support.append(button('Remove source '+(index+1),()=>{if(invalidInputs.size)throw Error('Correct unfinished structured fields before removing a source.');save('evidence',(finding?session.state().draft.fields.fields:session.state().draft.fields).evidence.filter((_,i)=>i!==index));}));form.append(support);
    }
   }
+  if(kind==='record_negative_search'){
+   form.append(node('p','Exact source version: '+f.artifact_version_id),node('p','An unsuccessful search is not proof of absence. State the searched range and remaining coverage limits.','muted'));
+   field(form,'Search query',f.query,v=>save('query',v));
+   field(form,'Search method',f.method,v=>save('method',v));
+   field(form,'Searched range',f.searched_range,v=>save('searched_range',v));
+   field(form,'Search coverage',typeof f.coverage?.complete==='boolean'?(f.coverage.complete?'complete':'partial'):'',v=>save('coverage',v?{...(session.state().draft.fields.coverage||{}),complete:v==='complete'}:{}),{select:['partial','complete']});
+   field(form,'Search outcome',f.outcome,v=>save('outcome',v));
+  }
   if(kind==='create_answer'){form.append(button('Browse evidence links',()=>{collection='evidence-links';return browse('evidence-links');},state.busy));summary(form,'Selected pinned link identities',f.evidence_link_ids||[]);for(const id of f.evidence_link_ids||[])form.append(button('Remove selected link '+id,()=>save('evidence_link_ids',session.state().draft.fields.evidence_link_ids.filter(value=>value!==id))));}
   if(kind==='review_answer'){
    field(form,'Independent outcome',f.outcome,v=>save('outcome',v),{select:['accepted','rejected']});
@@ -276,7 +340,7 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
    field(form,'Support state',f.state,v=>save('state',v),{select:['retracted','superseded']});
    if(f.state==='superseded')field(form,'Reviewed replacement evidence record',f._replacement||{},v=>save('_replacement',v),{json:true});
    field(form,'Reason',f.reason,v=>save('reason',v));
-  }else if(!['create_finding','create_answer'].includes(kind))field(form,'Rationale',f.rationale,v=>save('rationale',v));
+  }else if(!['create_finding','create_answer','record_negative_search'].includes(kind))field(form,'Rationale',f.rationale,v=>save('rationale',v));
   if(kind==='resolve_question'){summary(form,'Selected answer',f._answer||{id:f.answer_id,status:'Read current answer context before rebuilding this recovered draft.'});form.append(button('Read selected answer context',async()=>{const context=await session.inspectAnswer(f.answer_id);if(context){session.change('_answer',context.entity);session.change('_answerQuestionRevision',context.question.record_revision);}},state.busy));}
   const error=node('p',localError);error.dataset.editorError='';error.setAttribute('role','alert');form.append(error);
   if(d.needsReconcile){
@@ -309,6 +373,6 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
  render(session.state());
  return {...session,open:async(type,id)=>{related=null;await session.open(type,id);},seedFinding:(observation,taskId)=>start('create_finding',findingSeed(observation,taskId||getContext()?.taskId))};
 }
-const api={canResearch,create,operationForDraft,findingSeed,buildFindingOperation,buildFindingStateOperation,buildAnswerOperation,buildReviewOperation,buildResolutionOperation,buildQuestionStateOperation,buildEvidenceOperation};
+const api={canResearch,create,operationForDraft,findingSeed,derivationSeed,buildNegativeSearchOperation,buildFindingOperation,buildFindingStateOperation,buildAnswerOperation,buildReviewOperation,buildResolutionOperation,buildQuestionStateOperation,buildEvidenceOperation};
 root.WorkspaceResearch=api;if(typeof module!=='undefined'&&module.exports)module.exports=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

@@ -88,7 +88,7 @@ class WorkspaceSyncService:
         if config.get('repository')!=actual['repository']:raise StoreError(409,'Project remote changed; review synchronization setup')
         name=actual['remote_name']
         if name is None:raise StoreError(400,'Choose a Git remote in this project before enabling sharing')
-        result=subprocess.run(['git','-C',str(root),'remote','get-url',name],capture_output=True,timeout=10)
+        result=subprocess.run(['git','-C',str(root),'remote','get-url',name],stdin=subprocess.DEVNULL,capture_output=True,timeout=10)
         if result.returncode or len(result.stdout)>8192:raise StoreError(400,'Project remote could not be read')
         remote=os.fsdecode(result.stdout).strip()
         binding=hashlib.sha256((remote+'\0'+config.get('data_ref','refs/heads/workbench-data')).encode()).hexdigest()

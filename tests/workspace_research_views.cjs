@@ -150,3 +150,92 @@ assert.equal(views.canResearch({capabilities:{authenticated:true,granted:['contr
  assert.equal(calls.filter(c=>c.options?.method==='POST').length,0,'readable context never changes research state');
  console.log('readable research context checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
+
+assert.equal(typeof views.derivationSeed,'function','source history authors derivations using ordinary finding records');
+const derived=views.derivationSeed({id:'child',project_id:'p'},'task');
+assert.deepEqual(derived.scope,{artifact_version_id:'child',task_id:'task',derivation:{format:'workbench-derived-source/v1',parent_version_id:''}});
+assert.equal(derived.evidence[0].method,'','a source catalog selection never invents how derivation was established');
+assert.equal(derived.claim,'','derivation assertion remains explicitly authored');
+assert.throws(()=>views.buildFindingOperation('create_finding',{...derived,evidence:[support]}),/parent|derivation/i,'typed source assertions need an exact parent');
+assert.equal(typeof views.buildNegativeSearchOperation,'function');
+const searchFields={id:'negative',artifact_version_id:'child',query:'missingSymbol',method:'Exact text scan',searched_range:'Lines 1-20',coverage:{complete:false,excluded:['Other files']},outcome:'Not found in this bounded search'};
+const search=views.buildNegativeSearchOperation(searchFields,{id:'child',project_id:'p'});
+assert.deepEqual(search,{op:'record_negative_search',...searchFields});
+assert.throws(()=>views.buildNegativeSearchOperation({...searchFields,artifact_version_id:'other'},{id:'child',project_id:'p'}),/source|version|target/i);
+assert.throws(()=>views.buildNegativeSearchOperation({...searchFields,coverage:{complete:'false'}},{id:'child',project_id:'p'}),/coverage/i);
+assert.equal(views.operationForDraft({projectId:'p',selection:{context:{entity_type:'source',entity:{id:'child',project_id:'p'}}},draft:{kind:'record_negative_search',fields:searchFields}}).artifact_version_id,'child');
+assert.throws(()=>views.operationForDraft({projectId:'p',selection:{context:{entity_type:'source',entity:{id:'child',project_id:'foreign'}}},draft:{kind:'record_negative_search',fields:searchFields}}),/project|target/i);
+console.log('source criticism operation builder checks passed');
+
+(async()=>{
+ const doc={activeElement:null,createElement(tag){return new Element(tag,this);}},mount=new Element('main',doc),calls=[],stored=new Map();
+ const source={id:'search-source',project_id:'p',sha256:'a'.repeat(64),binary_build_id:null,artifact_id:'artifact',relative_path:'src/exact.js',kind:'file',availability:'available',local_bytes_available:true};
+ const context={entity_type:'source',entity:source,related:Object.fromEntries(['source-derivations','observations','negative-searches'].map(resource=>[resource,{resource,params:{project_id:'p',subject_id:source.id}}]))};
+ let saved;
+ const r=views.create({mount,document:doc,getContext:()=>({projectId:'p',principalId:'author',activePanel:'research'}),storage:{getItem:k=>stored.get(k)??null,setItem:(k,v)=>stored.set(k,v),removeItem:k=>stored.delete(k)},api:async(path,options)=>{
+  calls.push({path,options});if(options?.method==='POST'){const body=JSON.parse(options.body);saved=body.operations[0];return {project_id:'p',revision:'store:2',request_id:body.request_id,changed_records:[{type:'negative_search',id:saved.id}]};}
+  if(path.includes('/context'))return {project_id:'p',revision:saved?'store:2':'store:1',context};
+  return {project_id:'p',revision:'store:1',items:[],next_cursor:null};
+ }});
+ const all=n=>[n,...n.children.flatMap(all)],click=async label=>{const b=all(mount).find(n=>n.tagName==='button'&&n.textContent===label);assert.ok(b,'Missing control: '+label);assert.equal(b.disabled,false);await b.onclick();};
+ await r.open('source',source.id);await click('Record scoped search');
+ assert.equal(r.state().draft.fields.artifact_version_id,source.id);
+ assert.deepEqual(r.state().draft.fields.coverage,{},'coverage is never assumed complete or partial');
+ assert.ok(all(mount).some(n=>n.textContent.includes('not proof of absence')));
+ const input=(label,value)=>{const n=mount.querySelectorAll('[data-research-field]').find(n=>n.dataset.researchField===label);assert.ok(n,label);n.value=value;n.oninput();};
+ input('Search query','<script>needle</script>');input('Search method','Literal search');input('Searched range','lines 1–40 only');input('Search outcome','No matching text; generated code not searched');
+ let form=all(mount).find(n=>n.tagName==='form');await form.onsubmit({preventDefault(){}});
+ assert.equal(calls.filter(c=>c.options?.method==='POST').length,0,'explicit coverage required before save');
+ input('Search coverage','partial');
+ assert.equal(r.state().draft.fields.coverage.complete,false);
+ assert.equal(r.state().draft.fields.query,'<script>needle</script>','rerender retains authored text literally');
+ assert.equal(calls.filter(c=>c.options?.method==='POST').length,0,'choosing coverage does not submit');
+ form=all(mount).find(n=>n.tagName==='form');await form.onsubmit({preventDefault(){}});
+ assert.equal(saved.artifact_version_id,source.id);assert.deepEqual(saved.coverage,{complete:false});assert.equal(saved.searched_range,'lines 1–40 only');assert.ok(saved.id);
+ assert.ok(!Object.hasOwn(saved,'rationale'),'no unrelated operation fields');assert.equal(r.state().draft,null);
+ console.log('scoped search renderer checks passed');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+
+(async()=>{
+ const doc={activeElement:null,createElement(tag){return new Element(tag,this);}},mount=new Element('main',doc),calls=[];
+ const child={id:'child',project_id:'p',sha256:'b'.repeat(64),binary_build_id:null,artifact_id:'artifact',relative_path:'report.js',kind:'file',availability:'available',local_bytes_available:true};
+ const context={entity_type:'source',entity:child,related:Object.fromEntries(['source-derivations','observations','negative-searches'].map(resource=>[resource,{resource,params:{project_id:'p',subject_id:child.id}}]))};
+ const r=views.create({mount,document:doc,getContext:()=>({projectId:'p',principalId:'author',activePanel:'research'}),storage:null,api:async(path,options)=>{
+  calls.push({path,options});if(path.includes('/context'))return {project_id:'p',revision:'store:1',context};
+  return {project_id:'p',revision:'store:1',items:path.includes('index-runs')?[{id:'published-run',project_id:'p',state:'published'},{id:'draft-run',project_id:'p',state:'draft'}]:[{...child},{id:'parent',project_id:'p',sha256:'c'.repeat(64)}],next_cursor:null};
+ }});
+ const all=n=>[n,...n.children.flatMap(all)],click=async label=>{const b=all(mount).find(n=>n.tagName==='button'&&n.textContent===label);assert.ok(b,'Missing control: '+label);assert.equal(b.disabled,false);await b.onclick();};
+ await r.load();await click('artifact versions');await click('Open source');assert.equal(r.state().selection.id,'child');
+ await click('Record derivation assertion');assert.equal(r.state().draft.fields.scope.artifact_version_id,'child');
+ await click('Browse parent source versions');
+ const parentButtons=all(mount).filter(n=>n.tagName==='button'&&n.textContent==='Use as parent source');assert.equal(parentButtons.length,1,'child cannot be its own parent');await parentButtons[0].onclick();
+ assert.equal(r.state().draft.fields.scope.derivation.parent_version_id,'parent');
+ assert.deepEqual(r.state().draft.fields.evidence.map(x=>x.artifact_version_id),['child','parent']);
+ assert.ok(r.state().draft.fields.evidence.every(x=>x.method===''&&x.limitations===''&&x.locator===''),'parent selection cannot invent evidence');
+ await click('Browse published origin runs');assert.equal(all(mount).filter(n=>n.textContent==='Use recorded origin run').length,1,'draft runs cannot be selected');await click('Use recorded origin run');
+ assert.equal(r.state().draft.fields.scope.derivation.index_run_id,'published-run');await click('Clear origin run');assert.ok(!Object.hasOwn(r.state().draft.fields.scope.derivation,'index_run_id'));
+ assert.equal(calls.filter(c=>c.options?.method==='POST').length,0,'source browsing and parent/run selection never write');
+ console.log('source navigation and derivation controls passed');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+
+(async()=>{
+ const doc={activeElement:null,createElement(tag){return new Element(tag,this);}},mount=new Element('main',doc);
+ const version=id=>({id,project_id:'p',sha256:'d'.repeat(64),binary_build_id:null,artifact_id:'artifact',relative_path:id,kind:'file',availability:'available',local_bytes_available:true});
+ const related=Object.fromEntries(['source-derivations','observations','negative-searches'].map(resource=>[resource,{resource,params:{project_id:'p',subject_id:'child'}}]));
+ const r=views.create({mount,document:doc,getContext:()=>({projectId:'p',principalId:'author',activePanel:'research'}),storage:null,api:async(path)=>{
+  if(path.includes('/context')){const id=path.includes('/parent/')?'parent':'child';return {project_id:'p',revision:'store:1',context:{entity_type:'source',entity:version(id),related:Object.fromEntries(Object.entries(related).map(([k,v])=>[k,{...v,params:{...v.params,subject_id:id}}]))}};}
+  const derivation={id:'revision',project_id:'p',finding_id:'finding',claim:'Authored relation',uncertainty:'Direction unresolved',is_current:false,archived:true,parent_version:version('parent'),child_version:version('child'),origin_run:{id:'shared-run',project_id:'p'},support_counts:{available:1,retracted:1,superseded:0}};
+  const observation={id:'observation',project_id:'p',candidate_type:'observation',artifact_version_id:'child',identifier:'speed',namespace:'source',scope_key:'Ball',value:0,locator_key:{line:1},provenance:{method:'Read pinned fixture',limitations:'No runtime measurement'}};
+  return {project_id:'p',revision:'store:1',subject_id:'child',items:path.includes('source-derivations')?[derivation,{...derivation,id:'revision2',finding_id:'finding2',is_current:true,archived:false}]:path.includes('/observations?')?[observation]:[{id:'search',project_id:'p',artifact_version_id:'child',query:'needle',method:'literal scan',searched_range:'lines 1–40',coverage:{complete:false},outcome:'No match in that range'}],next_cursor:null};
+ }});
+ const all=n=>[n,...n.children.flatMap(all)],click=async label=>{const b=all(mount).find(n=>n.textContent===label&&n.tagName==='button');assert.ok(b,label);await b.onclick();};
+ await r.open('source','child');assert.ok(all(mount).some(n=>n.textContent==='d'.repeat(64)),'source hash readable');
+ await click('Read source-derivations');for(const value of ['Historical assertion','Archived finding','Retracted citations: 1','Recorded origin run: shared-run','Shared recorded origin within this page: shared-run (2 assertions)','Open parent source','Open derived source','Open assertion finding'])assert.ok(all(mount).some(n=>n.textContent===value),value);
+ await click('Read negative-searches');for(const value of ['Search query','needle','Searched range','lines 1–40','Partial coverage','No match in that range'])assert.ok(all(mount).some(n=>n.textContent===value),value);
+ assert.ok(!all(mount).some(n=>n.textContent==='Recorded review outcome'),'search outcome must not imply independent review');
+ await click('Read observations');
+ const readable=all(mount).filter(n=>n.tagName!=='pre').map(n=>n.textContent);
+ for(const value of ['Identifier','speed','Namespace','source','Scope','Ball','Observed value','0','Read pinned fixture','No runtime measurement'])assert.ok(readable.includes(value),`scoped observation displays ${value} outside collapsed provenance`);
+ await click('Read source-derivations');await click('Open parent source');assert.equal(r.state().selection.id,'parent');assert.ok(!all(mount).some(n=>n.textContent==='Historical assertion'),'navigation does not present the previous source collection as new-source history');
+ console.log('source history and scoped search presentation passed');
+})().catch(e=>{console.error(e);process.exitCode=1;});

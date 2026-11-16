@@ -35,7 +35,7 @@ def _run(root: Path, args: tuple[str, ...], *, deadline: float, limit: int) -> b
     proc = None
     readers = []
     try:
-        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         def drain(stream, index):
             while True:
                 chunk = stream.read(65536)

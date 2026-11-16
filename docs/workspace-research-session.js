@@ -5,7 +5,8 @@
   const RESOURCES = new Set([
     'findings', 'questions', 'artifact-versions', 'finding-revisions',
     'evidence-links', 'evidence-changes', 'research-review-notices', 'answers',
-    'answer-reviews', 'question-resolutions', 'answer-support'
+    'answer-reviews', 'question-resolutions', 'answer-support', 'source-derivations',
+    'observations', 'negative-searches', 'index-runs'
   ]);
   const SCHEMAS = {
     create_finding: ['id','claim','scope','classification','uncertainty','evidence'],
@@ -16,7 +17,8 @@
     create_answer: ['id','question_id','expected_question_revision','claim','evidence_link_ids','evidence'],
     review_answer: ['answer_id','expected_question_revision','outcome','rationale','supersedes'],
     resolve_question: ['question_id','expected_record_revision','answer_id','rationale'],
-    set_question_state: ['question_id','expected_record_revision','state','rationale']
+    set_question_state: ['question_id','expected_record_revision','state','rationale'],
+    record_negative_search: ['id','artifact_version_id','query','method','searched_range','coverage','outcome']
   };
   const PAGE_FILTERS = {
     findings: [], questions: [], 'artifact-versions': [],
@@ -24,7 +26,8 @@
     'evidence-changes': ['subject_id'],
     'research-review-notices': ['subject_type','subject_id'], answers: ['subject_id'],
     'answer-reviews': ['subject_id'], 'question-resolutions': ['subject_id'],
-    'answer-support': ['subject_id']
+    'answer-support': ['subject_id'], 'source-derivations': ['subject_id'],
+    observations: ['subject_id'], 'negative-searches': ['subject_id'], 'index-runs': []
   };
   const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
   const utf8Bytes = value => new TextEncoder().encode(value).length;
@@ -62,7 +65,8 @@
       create_answer: ['id','question_id','expected_question_revision','claim','evidence_link_ids'],
       review_answer: ['answer_id','expected_question_revision','outcome','rationale'],
       resolve_question: ['question_id','expected_record_revision','answer_id','rationale'],
-      set_question_state: ['question_id','expected_record_revision','state','rationale']
+      set_question_state: ['question_id','expected_record_revision','state','rationale'],
+      record_negative_search: ['id','artifact_version_id','query','method','searched_range','coverage','outcome']
     }[operation.op];
     if (required.some(key => !(key in operation))) throw Error('Operation is missing required guards or fields.');
     const text = (value, max=20000) => typeof value === 'string' && value.length > 0 && value.length <= max;
@@ -113,6 +117,12 @@
          !['open','investigating','withdrawn'].includes(operation.state) || !text(operation.rationale,4000))) {
       throw Error('Invalid question state.');
     }
+    if (operation.op === 'record_negative_search' &&
+        (!validId(operation.id) || !validId(operation.artifact_version_id) || !text(operation.query) ||
+         !text(operation.method) || !text(operation.searched_range) || !text(operation.outcome) ||
+         !isObject(operation.coverage) || typeof operation.coverage.complete!=='boolean')) {
+      throw Error('Malformed negative search record.');
+    }
     return clone(operation);
   }
 
@@ -121,7 +131,8 @@
       create_finding: ['id'], revise_finding: ['finding_id'], archive_finding: ['finding_id'],
       restore_finding: ['finding_id'], set_evidence_state: ['evidence_link_id'],
       create_answer: ['id','question_id'], review_answer: ['answer_id'],
-      resolve_question: ['question_id'], set_question_state: ['question_id']
+      resolve_question: ['question_id'], set_question_state: ['question_id'],
+      record_negative_search: ['id','artifact_version_id']
     }[operation.op] || [];
     return Object.fromEntries(keys.filter(key => operation[key] !== undefined).map(key => [key,operation[key]]));
   }
@@ -131,6 +142,7 @@
     if (operation.op==='review_answer') return {type:'answer',id:operation.answer_id,context:null};
     if (operation.op==='set_evidence_state') return {type:'evidence',id:operation.evidence_link_id,context:null};
     if (operation.question_id) return {type:'question',id:operation.question_id,context:null};
+    if (operation.op==='record_negative_search') return {type:'source',id:operation.artifact_version_id,context:null};
     return null;
   }
   function validateContext(result, project, type, id) {
@@ -143,6 +155,21 @@
         result.context.question.project_id !== project ||
         result.context.question.id !== result.context.entity.question_id)) {
       throw Error('Answer context question did not match the answer project and identity.');
+    }
+    if (type === 'source') {
+      const entity=result.context.entity;
+      if (typeof entity.sha256!=='string' || !/^[0-9a-f]{64}$/i.test(entity.sha256) ||
+          (entity.binary_build_id!==null && entity.binary_build_id!==undefined && !validId(entity.binary_build_id)) ||
+          !['available','missing','unavailable'].includes(entity.availability) || typeof entity.local_bytes_available!=='boolean' ||
+          !validId(entity.artifact_id) || typeof entity.relative_path!=='string' || typeof entity.kind!=='string' || !isObject(result.context.related)) {
+        throw Error('Source context did not include the immutable artifact version identity.');
+      }
+      const required=['source-derivations','observations','negative-searches'];
+      for (const resource of required) {
+        const descriptor=Object.values(result.context.related).find(value=>value?.resource===resource);
+        if (!isObject(descriptor) || !isObject(descriptor.params) ||
+            descriptor.params.project_id!==project || descriptor.params.subject_id!==id) throw Error(`Source related descriptor for '${resource}' did not match the selected version.`);
+      }
     }
     return result;
   }
@@ -261,12 +288,20 @@
         'finding-revisions':['subject_id','finding_id'], 'evidence-links':['subject_id','subject_id'],
         'evidence-changes':['subject_id','evidence_link_id'], 'research-review-notices':['subject_id','subject_id'],
         answers:['subject_id','question_id'], 'answer-reviews':['subject_id','answer_id'],
-        'question-resolutions':['subject_id','question_id']
+        'question-resolutions':['subject_id','question_id'],
+        observations:['subject_id','artifact_version_id'], 'negative-searches':['subject_id','artifact_version_id']
       }[resource];
+      if (filters.subject_id!==undefined && ['source-derivations','observations','negative-searches'].includes(resource) && result.subject_id!==filters.subject_id) {
+        throw Error('Research page envelope did not match its requested source subject.');
+      }
       for (const item of result.items) {
         if (!isObject(item) || item.project_id!==project || !validId(item.id)) throw Error('Research page contained a foreign or malformed record.');
         if (recordFilter && filters.subject_id!==undefined && item[recordFilter[1]]!==filters.subject_id) throw Error('Research page contained a record outside its requested identity.');
         if (recordFilter && filters.subject_type!==undefined && item.subject_type!==filters.subject_type) throw Error('Research page contained a record outside its requested type.');
+        if (resource==='source-derivations' && filters.subject_id!==undefined) {
+          const parent=item.parent_version, child=item.child_version, projectOk=value=>!value || (isObject(value) && value.project_id===project && validId(value.id));
+          if (!projectOk(parent) || !projectOk(child) || !(parent?.id===filters.subject_id || child?.id===filters.subject_id)) throw Error('Source derivation did not touch the requested version within this project.');
+        }
         if (resource==='answer-support' && selection?.type==='answer') {
           const pinned=selection.context.entity.evidence;
           if (!Array.isArray(pinned) || !pinned.includes(item.id)) throw Error('Answer support page contained an unpinned source link.');
@@ -286,7 +321,7 @@
       pages={context:{revision:result.revision,context:clone(result.context)}};
     }
     async function fetchEntityContext(type,id,context) {
-      const segment={finding:'findings',question:'questions',answer:'answers',evidence:'evidence-links'}[type];
+      const segment={finding:'findings',question:'questions',answer:'answers',evidence:'evidence-links',source:'artifact-versions'}[type];
       const result=await call(`/v1/${segment}/${encodeURIComponent(id)}/context?project_id=${encodeURIComponent(context.projectId)}`);
       return validateContext(result,context.projectId,type,id);
     }
@@ -325,7 +360,7 @@
     async function open(type,id) {
       busyGuard(); readRecoveryOnce(); if (recoveryBroken) throw Error(error);
       const context=scoped(); if (draft || pendingBody) throw Error('Save, reconcile or discard the current draft before changing selection.');
-      if (!['finding','question','answer','evidence'].includes(type) || !validId(id)) throw Error('Invalid research selection.');
+      if (!['finding','question','answer','evidence','source'].includes(type) || !validId(id)) throw Error('Invalid research selection.');
       adoptCleanContext(context);
       const ticket=++sequence, identity={projectId:context.projectId,principalId:context.principalId,selectionId:selection?.id||null};
       busy=true; phase='loading'; error=''; emit();
@@ -390,6 +425,19 @@
       if (!fields.finding_id && ['revise_finding','archive_finding','restore_finding'].includes(kind) && selection?.type==='finding') fields.finding_id=selection.id;
       if (!fields.question_id && ['create_answer','resolve_question','set_question_state'].includes(kind) && selection?.type==='question') fields.question_id=selection.id;
       if (!fields.answer_id && kind==='review_answer' && selection?.type==='answer') fields.answer_id=selection.id;
+      if (kind==='record_negative_search') {
+        if (selection?.type!=='source') throw Error('Select the exact immutable source version first.');
+        if (!fields.id) fields.id=requestId();
+        if (!fields.artifact_version_id) fields.artifact_version_id=selection.id;
+        if (fields.artifact_version_id!==selection.id) throw Error('Negative search must target the selected source version.');
+      }
+      if (selection?.type==='source' && !['record_negative_search','create_finding'].includes(kind)) throw Error('Only a derivation finding or negative search can be authored from a source version.');
+      if (selection?.type==='source' && kind==='create_finding') {
+        const scope=fields.scope;
+        if (!isObject(scope) || scope.artifact_version_id!==selection.id) throw Error('A source finding must retain the selected child version.');
+        if (scope.derivation?.format==='workbench-derived-source/v1' &&
+            scope.derivation.parent_version_id!=='' && !validId(scope.derivation.parent_version_id)) throw Error('Malformed source derivation metadata.');
+      }
       if (['create_finding','create_answer'].includes(kind) && !fields.id) fields.id=requestId();
       draft={kind,fields,baseRevision:revision,recordRevision:fields.expected_record_revision??fields.expected_question_revision??null,
         entity:selection?clone(selection):null,targetIds:targetIds({...fields,op:kind}),version:0,needsReconcile:false};
@@ -399,6 +447,11 @@
       busyGuard(); readRecoveryOnce(); if (recoveryBroken) throw Error(error); scoped();
       if (!draft || pendingBody) throw Error('No editable research draft.');
       if (typeof field!=='string' || !field || ['expected_revision','principal_id','project_id'].includes(field)) throw Error('That field cannot be changed in the editor.');
+      if (draft.kind==='record_negative_search' && field==='artifact_version_id' && value!==draft.entity?.id) throw Error('Negative search source identity cannot change from the selected version.');
+      if (draft.kind==='create_finding' && draft.entity?.type==='source' && field==='scope' &&
+          (!isObject(value) || value.artifact_version_id!==draft.entity.id)) {
+        throw Error('Source finding child identity cannot change from the selected source version.');
+      }
       draft.fields[field]=clone(value); draft.version++; emit(); return state();
     }
     function ensureTargetIdentity(operation) {
@@ -406,6 +459,8 @@
       for (const [key,value] of Object.entries(draft?.targetIds||{})) {
         if (submitted[key]!==value) throw Error('Operation target identity cannot change from the original draft.');
       }
+      if (draft?.kind==='record_negative_search' && (operation.artifact_version_id!==draft.entity?.id || operation.id!==draft.fields.id)) throw Error('Negative search identity cannot change from the original source draft.');
+      if (draft?.kind==='create_finding' && draft.entity?.type==='source' && operation.scope?.artifact_version_id!==draft.entity.id) throw Error('Source finding must remain bound to the selected child source version.');
     }
     function prepare(operation) {
       const context=scoped();
@@ -445,6 +500,7 @@
         row.answer_id===operation.answer_id && row.outcome===operation.outcome);
       if (operation.op==='set_evidence_state') return records.some(row=>row?.type==='evidence_change' && validId(row.id) &&
         row.evidence_link_id===operation.evidence_link_id && row.state===operation.state);
+      if (operation.op==='record_negative_search') return records.some(row=>row?.type==='negative_search' && row.id===operation.id);
       const descriptor={
         create_finding:['finding',operation.id], revise_finding:['finding',operation.finding_id],
         archive_finding:['finding',operation.finding_id], restore_finding:['finding',operation.finding_id],
@@ -487,7 +543,8 @@
     async function submit(operation) {
       if (!isObject(operation)) throw Error('A complete reviewed operation is required.');
       if (draft && operation.op!==draft.kind) throw Error('Operation does not match the current draft.');
-      if (['create_finding','create_answer'].includes(operation.op) && !operation.id) operation={...operation,id:draft?.fields.id||requestId()};
+      if (['create_finding','create_answer','record_negative_search'].includes(operation.op) && !operation.id) operation={...operation,id:draft?.fields.id||requestId()};
+      if (operation.op==='record_negative_search' && !operation.artifact_version_id) operation={...operation,artifact_version_id:draft?.entity?.id};
       return transmit(operation);
     }
     async function retry() {
@@ -531,7 +588,8 @@
       const context=scoped();
       if (typeof freshContextRevision!=='string' || freshContextKey!==contextKey()) throw Error('Refresh the selected context after rejection before reconciling.');
       if (!isObject(operation) || operation.op!==draft.kind) throw Error('Reconciled operation does not match this draft.');
-      if (['create_finding','create_answer'].includes(operation.op) && !operation.id) operation={...operation,id:draft.fields.id};
+      if (['create_finding','create_answer','record_negative_search'].includes(operation.op) && !operation.id) operation={...operation,id:draft.fields.id};
+      if (operation.op==='record_negative_search' && !operation.artifact_version_id) operation={...operation,artifact_version_id:draft.entity?.id};
       ensureTargetIdentity(operation);
       const safe=validateOperation(operation);
       draft={...draft,fields:safe,baseRevision:freshContextRevision,recordRevision:safe.expected_record_revision??safe.expected_question_revision??draft.recordRevision,needsReconcile:false,version:draft.version+1};

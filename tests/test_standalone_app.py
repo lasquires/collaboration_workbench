@@ -60,6 +60,28 @@ class StandaloneTests(unittest.TestCase):
                     report=workspace.diagnose(repos[0],url)
                     self.assertTrue(report['connected'])
                     self.assertEqual(report['project_id'],first['project_id'])
+                    self.assertEqual(report['sync_state'],'off')
+                    self.assertFalse(report['git_sync']['enabled'])
+                    self.assertIn('enable it explicitly',report['next_action'])
+                    self.assertEqual(report['source_bytes'],{'versions_checked':0,'local_bytes_available':0,'bytes_missing':0,'complete':True})
+                    self.assertIn('evidence_state',report)
+                    from tools.workspace_sync_service import WorkspaceSyncService
+                    connection=RoadmapStore(path).read_v1('repositories',first['project_id'])['items'][0]
+                    sync=WorkspaceSyncService(RoadmapStore(path))
+                    state={'enabled':True,'export_selected':True,'requested':True,'state':'pending','error':None,
+                           'retry_after':0,'interval_seconds':300,'quiet_seconds':30,'last_attempt':0,
+                           'result':None,'observed':None,'binding':'private-binding','data_ref':'refs/heads/workbench-data'}
+                    sync._save(first['project_id'],connection['id'],state)
+                    pending=workspace.diagnose(repos[0],url)
+                    self.assertEqual(pending['git_sync']['state'],'pending')
+                    self.assertTrue(pending['git_sync']['requested'])
+                    self.assertIn('Sync now',pending['next_action'])
+                    self.assertNotIn('binding',json.dumps(pending['git_sync']))
+                    state.update(state='failed',requested=False,error='Git sharing could not finish; check the project binding, portable records and Git access',retry_after=60)
+                    sync._save(first['project_id'],connection['id'],state)
+                    failed=workspace.diagnose(repos[0],url)
+                    self.assertEqual(failed['git_sync']['error'],'Git sharing could not finish; check the project binding, portable records and Git access')
+                    self.assertIn('failed',failed['next_action'])
                     self.assertEqual(len(RoadmapStore(path).read_v1('projects')['items']),3)
                 finally:
                     server.shutdown();server.server_close();worker.join()

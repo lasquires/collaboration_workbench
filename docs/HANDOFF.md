@@ -1,6 +1,26 @@
 # Continue Collaboration Workbench
 
-Updated 2026-11-16. The app is not finished. This document is sufficient to resume without the original conversation.
+Updated 2026-11-16. The source-criticism application work and combined authenticated
+browser gate are now complete. See the delivery reconciliation in
+`docs/release-acceptance.md`, independent review in `docs/release-audit.md`, and
+repeatable commands in `docs/verification.md`. The older checkpoint below is
+retained as history. Production SSG2 authority migration/cutover remains a
+separate owner-coordinated gate; no production data was imported or switched.
+
+The continuation added a real-browser acceptance runner covering source entry
+links, conflicting builds, shared-origin reports, bounded searches, visible
+limitations, historical/archived/withdrawn support, phone layout, draft guards,
+lost-response exact retry and explicit stale reconciliation. The same runner
+onboards two disposable Git repositories and verifies project-isolated evidence
+and owner-only setup. It found and fixed hidden observation details and Windows
+Git subprocess stdin contention. `doctor` now reports actual synchronization,
+evidence and local-byte availability with actionable guidance.
+
+Final validation: 519 regular Python tests in 406.999s (zero failures/errors,
+one optional OpenSSL skip), all 14 existing Node suites, the combined authenticated
+browser gate, and both separately gated source-roundtrip scale cases (672.286s).
+The regular run followed the final code changes. Reproduction details and the
+scope of these results are in the release report and verification guide.
 
 ## Get the right checkout
 
@@ -9,6 +29,19 @@ Public repository: https://github.com/lasquires/collaboration_workbench
 Stable code baseline: `3c590b9e5fe58caff52f6c88602a210ef6143c3d` on main. Main also receives this handoff documentation. The unfinished source-criticism checkpoint is published separately as `codex/source-criticism-handoff`. Continue from that branch, preserving its changes. The local branch was named `codex/standalone`; a different local name does not mean a different application.
 
 Open the **research-workspace** directory as the next chat's workspace. Suggested prompt: **Finish this app. Follow AGENTS.md and docs/HANDOFF.md. Continue the source-criticism checkpoint.**
+
+## Continue on another computer
+
+Clone the continuation branch directly:
+
+```text
+git clone --branch codex/source-criticism-handoff https://github.com/lasquires/collaboration_workbench.git
+cd collaboration_workbench
+```
+
+Open that checkout as the coding workspace and give the suggested prompt above. Python 3.11+, Node and Git are sufficient for the local development/test workflow. The machine-specific appendix below is historical coordination context, not a prerequisite: the old SSG2 loopback service, private databases, Temp files and original chat are not needed to finish app code or run synthetic acceptance fixtures. Do not attempt to connect to that machine's localhost from another computer. Use this document, the accepted plans/specs and committed tests to continue; keep new progress in the destination workspace's task tracker. Actual SSG2 production cutover remains a separate gate requiring access to its authoritative data, supported backup and owner coordination; do not claim it done from a synthetic fixture.
+
+Latest regular regression on this checkpoint: **519 Python tests passed in 393.656 seconds, one optional OpenSSL-dependent skip, zero failures/errors**. The two large SourceRoundtripTests were excluded and remain separately gated. This result was confirmed from both the saved result JSON and test-run output after the previous chat was paused.
 
 ## Product requirements
 
@@ -26,11 +59,11 @@ An authenticated browser research loop was exercised end-to-end: finding from ex
 
 Original SSG2 schema-4 data was backed up with SQLite-aware tooling, migrated only in private copies to app schema 17, restored and tested through the normal launcher. Original rows/history were compared and the original authority was left unchanged. No production cutover has occurred.
 
-## Unfinished checkpoint: source criticism
+## Original handoff checkpoint: source criticism
 
 Read `docs/superpowers/plans/2026-11-16-source-criticism.md` and the source-criticism section of `docs/superpowers/specs/2026-11-12-collaborative-research-workspace-design.md`.
 
-Backend/controller and pure builders exist; the actual UI wiring and browser acceptance remain unfinished. No new schema/table/version was introduced.
+Backend/controller and pure builders exist. The exact-source scoped-search action/form is wired and covered by a red-green DOM fixture (explicit coverage, no autosubmit, literal draft text, saved exact source). Source entry navigation, explicit parent/published-run controls, derivation history/support states, scoped-search presentation and hash/locator comparison are now wired. An independent read-only review found no important issues. A real authenticated browser fixture saved/read back a bounded negative search and a derivation with two authored citations and visible limitations. The larger conflicting-build/shared-run/mobile/recovery browser acceptance and final review remain unfinished. No new schema/table/version was introduced.
 
 Changed files:
 
@@ -45,12 +78,12 @@ Typed derivation is an ordinary finding scope: `artifact_version_id` is the chil
 
 GET `/v1/artifact-versions/{id}/context?project_id=...` exposes source context. Related descriptors identify resources `source-derivations`, `observations`, `negative-searches` with exact project/subject parameters. Source derivation rows carry historical/current/archive flags and support_counts. Source versions can have null/absent binary_build_id. Read the implementation/tests for exact envelopes rather than inventing fields.
 
-### Next concrete work
+### Original next steps (superseded by delivery reconciliation)
 
-1. Wire source opening from catalog, existing Evidence comparison, observations and findings. Extend dashboard URL selection to accept source (currently finding/question/answer/evidence).
-2. Add source-context actions and forms: record scoped negative search with explicit complete/partial coverage, query, method, searched range and outcome; record derivation with parent-version and optional published-run picker. Never invent methods/limits or infer proof of absence.
-3. Render derivation/common-origin history with current/historical/archive/support states and parent/child/finding links. Reuse the existing Evidence browser and two-item comparison.
-4. Show conflicting builds side-by-side with readable exact hashes, locators, uncertainty and conclusion limits; do not select a winner automatically.
+1. Verify the newly wired source opening from catalog, citations, observations and scoped findings in the full acceptance fixture. Dashboard task-scoped URLs now accept source.
+2. Verify explicit parent-version and optional published-run selection, including wrong-input server rejection. Scoped-search and derivation forms now exist and preserve blank user-authored locator/method/limits until entered. Never infer proof of absence.
+3. Verify the new derivation/common-origin history with current/historical/archive/support states and parent/child/finding links against the larger fixture. Page-bounded shared-run grouping is explicit.
+4. The existing comparison now includes exact hashes/locators and a source/scope difference warning. Verify conflicting builds, uncertainty and conclusion limits in the actual browser; do not select a winner automatically.
 5. Exercise actual authenticated browser flows with two conflicting builds, two reports sharing an explicit run, bounded negative search, limitations, mobile, draft navigation and lost-response/stale recovery.
 6. Obtain independent review and run relevant regression gates. Only then close source-criticism tasks.
 7. Finish project/authority separation and final parent release audit. Existing source authority must not silently become app development authority. Verify per-project setup instructions and both Git-only/live modes against the release matrix.
@@ -77,7 +110,7 @@ Python: `C:/Users/lukes/.cache/codex-runtimes/codex-primary-runtime/dependencies
 
 Existing task authority remains SSG2 `analysis/roadmap.sqlite3`, schema 4, loopback `http://127.0.0.1:8769`; use its service/API or `tools/roadmap_cli.py`, never direct DB writes. Read its BOARD workflow before claiming. App schema is 17. Do not confuse API export schema_version with DB schema. Source service was left running; check availability rather than starting a competing instance.
 
-Resume task context for C01-SOURCE-CRITICISM, C01-SOURCE-CONTEXT-BACKEND and C01-SOURCE-SESSION. These remain unfinished. Claims are released for handoff; reread context and claim explicit paths before writes. C01-PROJECT-SEPARATION and C01-STANDALONE contain remaining cutover requirements. On 409 reread and reconcile explicitly; parent completion needs its own gate.
+Resume task context for C01-SOURCE-CRITICISM, which remains unfinished. Its bounded C01-SOURCE-CONTEXT-BACKEND and C01-SOURCE-SESSION child gates are now done: independent backend review found no important defects, 14 focused source/HTTP tests passed, and session fixtures passed again. The parent still requires its larger browser gate and own acceptance. Reread context and claim explicit paths before writes. C01-PROJECT-SEPARATION and C01-STANDALONE contain remaining cutover requirements. On 409 reread and reconcile explicitly; parent completion needs its own gate.
 
 Private acceptance evidence was in system Temp folders `workbench-legacy-acceptance-p5xulh3p`, `workbench-full-research-3dzbqnmt`, and `workbench-sections-regular-sm6tjzpp`; it is optional local evidence, not a dependency or something to publish. Fixture services were stopped; original source service was retained. Do not print tokens from fixture metadata.
 

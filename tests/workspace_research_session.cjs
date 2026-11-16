@@ -291,5 +291,78 @@ const createFinding=()=>({op:'create_finding',id:uuid(11),claim:'Observed behavi
       assert.equal(h.calls.filter(call=>call.options.method==='POST').length,0,'target context recovery never submits');
     }
   }
+  {
+    const source=uuid(801), finding=uuid(802), search=uuid(803);
+    const sourceContext={entity_type:'source',entity:{id:source,project_id:uuid(1),sha256:'a'.repeat(64),binary_build_id:null,availability:'available',local_bytes_available:true,artifact_id:uuid(804),relative_path:'child',kind:'file'},related:{'source history':{resource:'source-derivations',params:{project_id:uuid(1),subject_id:source}},observations:{resource:'observations',params:{project_id:uuid(1),subject_id:source}},'negative searches':{resource:'negative-searches',params:{project_id:uuid(1),subject_id:source}}}};
+    const h=harness({api:async(path,options)=>path.includes('/context')?{project_id:uuid(1),revision:'store:1',context:sourceContext}:path.startsWith('/v1/source-derivations')?{project_id:uuid(1),revision:'store:1',items:[{id:finding,project_id:uuid(1),finding_id:finding,parent_version:{id:uuid(999),project_id:uuid(1)},child_version:{id:uuid(1000),project_id:uuid(1)}}],next_cursor:null}:options.method==='POST'?receipt(JSON.parse(options.body),[{type:'negative_search',id:search}]):{project_id:uuid(1),revision:'store:1',items:[],next_cursor:null}});
+    await h.session.open('source',source);assert.equal(h.session.state().selection.type,'source');
+    await assert.rejects(h.session.readPage('source-derivations',{subject_id:uuid(999)},null),/descriptor/);
+    h.calls.length=0;
+    await assert.rejects(h.session.readPage('source-derivations',{subject_id:source},null),/touch|requested/,'same-project but unrelated derivation is rejected');
+  }
+  {
+    const source=uuid(811), search=uuid(812), fields={id:search,artifact_version_id:source,query:'function signature',method:'indexed search',searched_range:'all source files',coverage:{complete:false,files:['src/']},outcome:'no matches'};
+    let fail=true;
+    const context={entity_type:'source',entity:{id:source,project_id:uuid(1),sha256:'a'.repeat(64),binary_build_id:null,availability:'available',local_bytes_available:true,artifact_id:uuid(813),relative_path:'child',kind:'file'},related:{'source history':{resource:'source-derivations',params:{project_id:uuid(1),subject_id:source}},observations:{resource:'observations',params:{project_id:uuid(1),subject_id:source}},'negative searches':{resource:'negative-searches',params:{project_id:uuid(1),subject_id:source}}}};
+    const h=harness({api:async(path,options)=>{
+      if(path.includes('/context'))return {project_id:uuid(1),revision:fail?'store:1':'store:2',context};
+      if(options.method==='POST'){const body=JSON.parse(options.body);if(fail)throw Error('lost response');return receipt(body,[{type:'negative_search',id:search}]);}
+      return {project_id:uuid(1),revision:'store:2',items:[],next_cursor:null};
+    }});
+    await h.session.open('source',source);h.session.edit('record_negative_search',fields);const op={op:'record_negative_search',...fields};
+    await assert.rejects(h.session.submit(op),/lost/);const frozen=h.session.state().pendingBody;assert.ok(frozen);
+    h.setContext({projectId:uuid(9)});await assert.rejects(h.session.retry(),/original project/);h.setContext({projectId:uuid(1)});
+    const recovered=harness({initialRecovery:frozen,api:async(path,options)=>path.includes('/context')?{project_id:uuid(1),revision:'store:1',context}:options.method==='POST'?receipt(JSON.parse(options.body),[{type:'negative_search',id:search}]):{project_id:uuid(1),revision:'store:1',capabilities:{}}});
+    await recovered.session.load();assert.equal(recovered.session.state().selection.id,source);assert.equal(recovered.calls.filter(c=>c.options.method==='POST').length,0);
+    fail=false;await recovered.session.retry();
+    assert.equal(recovered.calls.find(c=>c.options.method==='POST').options.body,frozen,'retry resends exact source operation bytes');
+  }
+  {
+    const source=uuid(821),search=uuid(822),fields={id:search,artifact_version_id:source,query:'needle',method:'index',searched_range:'repository',coverage:{complete:false},outcome:'not found'};
+    const context={entity_type:'source',entity:{id:source,project_id:uuid(1),sha256:'b'.repeat(64),binary_build_id:null,availability:'available',local_bytes_available:true,artifact_id:uuid(823),relative_path:'child',kind:'file'},related:{'source history':{resource:'source-derivations',params:{project_id:uuid(1),subject_id:source}},observations:{resource:'observations',params:{project_id:uuid(1),subject_id:source}},'negative searches':{resource:'negative-searches',params:{project_id:uuid(1),subject_id:source}}}};
+    const api=async(path,options)=>{
+      if(path.includes('/context'))return {project_id:uuid(1),revision:'store:2',context};
+      if(options.method==='POST'){const body=JSON.parse(options.body),e=Error('stale');e.data={transaction_rejection:{project_id:body.project_id,principal_id:body.actor.principal_id,request_id:body.request_id,expected_revision:body.expected_revision,state:'not_applied'}};throw e;}
+      return {project_id:uuid(1),revision:'store:2',items:[],next_cursor:null,capabilities:{}};
+    };
+    const h=harness({api});await h.session.open('source',source);h.session.edit('record_negative_search',fields);await assert.rejects(h.session.submit({op:'record_negative_search',...fields}));
+    await h.session.refreshContext();await h.session.reconcile({op:'record_negative_search',...fields},true);
+    assert.deepEqual(h.session.state().draft.fields.coverage,fields.coverage);assert.equal(h.session.state().draft.fields.query,fields.query);assert.equal(h.session.state().draft.baseRevision,'store:2');
+  }
+  {
+    const source=uuid(831),parent=uuid(832),finding=uuid(833);
+    const entity={id:source,project_id:uuid(1),sha256:'a'.repeat(64),binary_build_id:null,availability:'available',local_bytes_available:true,artifact_id:uuid(834),relative_path:'src/child.js',kind:'source_file'};
+    const related={derivations:{resource:'source-derivations',params:{project_id:uuid(1),subject_id:source}},notes:{resource:'observations',params:{project_id:uuid(1),subject_id:source}},searches:{resource:'negative-searches',params:{project_id:uuid(1),subject_id:source}}};
+    let submitted;
+    const h=harness({api:async(path,options)=>path.includes('/context')?{project_id:uuid(1),revision:'store:1',context:{entity_type:'source',entity,related}}:options.method==='POST'?(submitted=JSON.parse(options.body),receipt(submitted,[{type:'finding',id:finding}])):{project_id:uuid(1),revision:'store:1',items:[],next_cursor:null,subject_id:source}});
+    await h.session.open('source',source);
+    const scope={artifact_version_id:source,task_id:uuid(835),derivation:{format:'workbench-derived-source/v1',parent_version_id:parent}};
+    h.session.edit('create_finding',{id:finding,claim:'Authored derivation',scope,classification:'observation',uncertainty:'',evidence:[{artifact_version_id:source,locator:'src/child.js',method:'source derivation',limitations:'Derivation relation is authored'}]});
+    assert.throws(()=>h.session.change('scope',{...scope,artifact_version_id:parent}),/child identity/i);
+    const op={op:'create_finding',id:finding,claim:'Authored derivation',scope,classification:'observation',uncertainty:'',evidence:[{artifact_version_id:source,locator:'src/child.js',method:'source derivation',limitations:'Derivation relation is authored'}]};
+    await h.session.submit(op);assert.equal(submitted.operations[0].scope.artifact_version_id,source);assert.equal(h.session.state().phase,'saved');
+  }
+  {
+    const source=uuid(841),entity={id:source,project_id:uuid(1),sha256:'b'.repeat(64),binary_build_id:null,availability:'available',local_bytes_available:true,artifact_id:uuid(842),relative_path:'x',kind:'file'};
+    const related={derivations:{resource:'source-derivations',params:{project_id:uuid(1),subject_id:source}},observations:{resource:'observations',params:{project_id:uuid(1),subject_id:source}},negative_searches:{resource:'negative-searches',params:{project_id:uuid(1),subject_id:source}}};
+    const h=harness({api:async(path)=>path.includes('/context')?{project_id:uuid(1),revision:'store:1',context:{entity_type:'source',entity,related}}:{project_id:uuid(1),revision:'store:1',items:[],next_cursor:null,subject_id:uuid(999)}});
+    await h.session.open('source',source);await assert.rejects(h.session.readPage('negative-searches',{subject_id:source},null),/envelope/);
+  }
+  {
+    const source=uuid(851), parent=uuid(852), finding=uuid(853);
+    const entity={id:source,project_id:uuid(1),sha256:'c'.repeat(64),binary_build_id:null,availability:'available',local_bytes_available:true,artifact_id:uuid(854),relative_path:'child',kind:'file'};
+    const related={d:{resource:'source-derivations',params:{project_id:uuid(1),subject_id:source}},o:{resource:'observations',params:{project_id:uuid(1),subject_id:source}},n:{resource:'negative-searches',params:{project_id:uuid(1),subject_id:source}}};
+    const h=harness({api:async(path,options)=>path.includes('/context')?{project_id:uuid(1),revision:'store:1',context:{entity_type:'source',entity,related}}:options.method==='POST'?receipt(JSON.parse(options.body),[{type:'finding',id:finding}]):{project_id:uuid(1),revision:'store:1',items:[],next_cursor:null}});
+    await h.session.open('source',source);
+    const typedScope={artifact_version_id:source,task_id:uuid(855),derivation:{format:'workbench-derived-source/v1',parent_version_id:''}};
+    h.session.edit('create_finding',{id:finding,claim:'',scope:typedScope,classification:'observation',uncertainty:'',evidence:[]});
+    h.session.change('scope',{...typedScope,derivation:{...typedScope.derivation,parent_version_id:parent}});
+    await assert.rejects(h.session.submit({op:'create_finding',id:finding,claim:'derived',scope:{...typedScope,artifact_version_id:parent},classification:'observation',uncertainty:'',evidence:[]}),/child|selected source/i);
+    h.session.discard();
+    h.session.edit('create_finding',{id:finding,claim:'ordinary finding',scope:{artifact_version_id:source},classification:'observation',uncertainty:'',evidence:[]});
+    assert.equal(h.session.state().draft.fields.scope.artifact_version_id,source,'ordinary source-bound finding can be authored without derivation metadata');
+    h.session.discard();h.session.edit('create_finding',{id:finding,claim:'future scope',scope:{artifact_version_id:source,derivation:{format:'future-unknown',custom:'retain'}},classification:'observation',uncertainty:'',evidence:[]});
+    assert.equal(h.session.state().draft.fields.scope.derivation.custom,'retain','ordinary future metadata is preserved rather than interpreted as a typed derivation');
+  }
   console.log('workspace_research_session: all fixtures passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

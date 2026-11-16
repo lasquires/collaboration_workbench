@@ -237,6 +237,12 @@ def workspace_read(parsed,*,ui_actor_id=None):
     if path==['v1','source-manifests']:
         if set(options)-{'manifest_id','limit','cursor'}:raise RoadmapError(400,'Unsupported source manifest parameter')
         return _store().read_v1('source-manifests',project_id,**options)
+    if len(path)==4 and path[1]=='artifact-versions' and path[3]=='context':
+        if options:raise RoadmapError(400,'Source context accepts only project scope')
+        return _store().read_v1('source-context',project_id,key=urllib.parse.unquote(path[2]))
+    if len(path)==2 and (path[1]=='source-derivations' or path[1] in {'observations','negative-searches'} and 'subject_id' in options):
+        if 'subject_id' not in options or set(options)-{'subject_id','limit','cursor'}:raise RoadmapError(400,'Source page requires subject_id and supports only limit/cursor')
+        return _store().read_v1(path[1],project_id,**options)
     if len(path)==4 and path[1] in ('findings','questions','answers','evidence-links') and path[3]=='context':
         if options:raise RoadmapError(400,'Research context route accepts only project scope')
         resource={'findings':'finding-context','questions':'question-context','answers':'answer-context','evidence-links':'evidence-context'}[path[1]]

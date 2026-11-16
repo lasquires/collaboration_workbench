@@ -81,7 +81,8 @@ class GitWorkspaceTransport:
                    GIT_COMMITTER_NAME='Workspace Transport', GIT_COMMITTER_EMAIL='transport@localhost')
         try:
             with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-                result = subprocess.run(command, input=input_bytes, stdout=stdout, stderr=stderr,
+                stdin_options = {'stdin': subprocess.DEVNULL} if input_bytes is None else {'input': input_bytes}
+                result = subprocess.run(command, **stdin_options, stdout=stdout, stderr=stderr,
                                         timeout=self.command_timeout, env=env)
                 if stdout.tell() > self.max_object_bytes + 1024 or stderr.tell() > self.max_object_bytes + 1024:
                     raise TransportError('Git output exceeds object bound')

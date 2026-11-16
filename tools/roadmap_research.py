@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 OPS = {'review_task_sharing', 'review_journal_sharing', 'register_root', 'bind_root', 'register_artifact', 'register_artifact_version',
        'create_index_run', 'stage_batch', 'publish_run', 'create_question',
        'record_negative_search', 'import_variable_registry', 'revise_question', 'create_finding', 'revise_finding', 'archive_finding', 'restore_finding', 'set_evidence_state','create_answer','review_answer','resolve_question','set_question_state'}
-RESOURCES = {'task-children', 'task-findings', 'task-questions', 'task-sharing-original', 'task-sharing-review', 'journal-sharing-review', 'artifacts', 'artifact-versions', 'index-runs', 'occurrences',
+RESOURCES = {'source-context', 'source-derivations', 'task-children', 'task-findings', 'task-questions', 'task-sharing-original', 'task-sharing-review', 'journal-sharing-review', 'artifacts', 'artifact-versions', 'index-runs', 'occurrences',
              'observations', 'questions', 'negative-searches', 'finding-context', 'question-context', 'answer-context', 'evidence-context', 'answer-support', 'findings', 'finding-revisions', 'evidence-links', 'evidence-changes', 'research-review-notices','answers','answer-reviews','question-resolutions','source-manifests'}
 
 
@@ -504,6 +504,12 @@ def read(db,resource,project,*,limit=None,cursor=None,**unused):
         from . import workspace_answers
     except ImportError:
         import workspace_answers
+    if resource in {'source-context','source-derivations'} or resource in {'observations','negative-searches'} and unused.get('subject_id') is not None:
+        try:
+            from . import workspace_source_context
+        except ImportError:
+            import workspace_source_context
+        return workspace_source_context.read(db,resource,project,limit=limit,cursor=cursor,**unused)
     if resource in {'task-children', 'task-findings', 'task-questions'}:
         try:
             from . import workspace_task_sections
