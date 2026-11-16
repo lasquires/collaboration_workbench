@@ -111,3 +111,33 @@ backed-up work. Research source criticism presentation (conflicting builds,
 common-source derivatives and scoped negative searches) must be audited against
 the design's human-interface requirements; backend storage alone cannot prove
 those screens are usable. No full-product completion is inferred from this report.
+
+
+## Source-criticism checkpoint review (2026-11-16)
+
+The handoff branch now exposes exact-source context from the version catalog,
+citations and Evidence observations, with explicit parent-version/published-run
+selection for ordinary typed derivation findings. History shows current/historical
+assertions, archived findings, available/retracted/superseded citation counts and
+page-bounded recorded common-origin groups. Existing observation comparison adds
+source hashes and locators with a scope-difference warning.
+
+Red-green DOM/model fixtures cover these controls, literal authored text, exact
+child identity, blank user-authored methods/limits, explicit search coverage and
+no writes while selecting sources/runs. All 12 `workspace_*.cjs` suites passed.
+An independent read-only UI review found no important issues. A separate backend
+integration review found no important defects; its 14 source-context/HTTP tests
+passed. The guarded source-session fixtures passed again, including frozen retry,
+no automatic POST after recovery, subject binding and explicit reconciliation.
+
+An authenticated disposable browser fixture saved/read a partial-coverage negative
+search and a derivation with explicit citations to both exact versions. The view
+retained uncertainty, source hashes and authorship. The larger combined conflicting
+build/shared-origin-run/mobile/recovery acceptance fixture remains open. These
+bounded child gates do not complete the source-criticism parent or final release.
+
+The subsequent regular Python regression on the source-criticism checkpoint ran
+519 tests in 393.656 seconds: zero failures/errors and one optional OpenSSL-dependent
+skip. The two large `SourceRoundtripTests` were explicitly excluded and remain a
+separate scale gate. This is a current regression result, not completion of the
+remaining human-interface or authority-cutover acceptance requirements.

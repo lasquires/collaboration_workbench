@@ -10,6 +10,19 @@ Stable code baseline: `3c590b9e5fe58caff52f6c88602a210ef6143c3d` on main. Main a
 
 Open the **research-workspace** directory as the next chat's workspace. Suggested prompt: **Finish this app. Follow AGENTS.md and docs/HANDOFF.md. Continue the source-criticism checkpoint.**
 
+## Continue on another computer
+
+Clone the continuation branch directly:
+
+```text
+git clone --branch codex/source-criticism-handoff https://github.com/lasquires/collaboration_workbench.git
+cd collaboration_workbench
+```
+
+Open that checkout as the coding workspace and give the suggested prompt above. Python 3.11+, Node and Git are sufficient for the local development/test workflow. The machine-specific appendix below is historical coordination context, not a prerequisite: the old SSG2 loopback service, private databases, Temp files and original chat are not needed to finish app code or run synthetic acceptance fixtures. Do not attempt to connect to that machine's localhost from another computer. Use this document, the accepted plans/specs and committed tests to continue; keep new progress in the destination workspace's task tracker. Actual SSG2 production cutover remains a separate gate requiring access to its authoritative data, supported backup and owner coordination; do not claim it done from a synthetic fixture.
+
+Latest regular regression on this checkpoint: **519 Python tests passed in 393.656 seconds, one optional OpenSSL-dependent skip, zero failures/errors**. The two large SourceRoundtripTests were excluded and remain separately gated. This result was confirmed from both the saved result JSON and test-run output after the previous chat was paused.
+
 ## Product requirements
 
 A separate app connects multiple Git repositories, indexes their committed code/assets and displays updates. Shared tasks, research and evidence belong to each connected project, with instructions agents can follow to initialize that project's schema/contract. They do not belong in the app's development repository.
@@ -77,7 +90,7 @@ Python: `C:/Users/lukes/.cache/codex-runtimes/codex-primary-runtime/dependencies
 
 Existing task authority remains SSG2 `analysis/roadmap.sqlite3`, schema 4, loopback `http://127.0.0.1:8769`; use its service/API or `tools/roadmap_cli.py`, never direct DB writes. Read its BOARD workflow before claiming. App schema is 17. Do not confuse API export schema_version with DB schema. Source service was left running; check availability rather than starting a competing instance.
 
-Resume task context for C01-SOURCE-CRITICISM, C01-SOURCE-CONTEXT-BACKEND and C01-SOURCE-SESSION. These remain unfinished. Claims are released for handoff; reread context and claim explicit paths before writes. C01-PROJECT-SEPARATION and C01-STANDALONE contain remaining cutover requirements. On 409 reread and reconcile explicitly; parent completion needs its own gate.
+Resume task context for C01-SOURCE-CRITICISM, which remains unfinished. Its bounded C01-SOURCE-CONTEXT-BACKEND and C01-SOURCE-SESSION child gates are now done: independent backend review found no important defects, 14 focused source/HTTP tests passed, and session fixtures passed again. The parent still requires its larger browser gate and own acceptance. Reread context and claim explicit paths before writes. C01-PROJECT-SEPARATION and C01-STANDALONE contain remaining cutover requirements. On 409 reread and reconcile explicitly; parent completion needs its own gate.
 
 Private acceptance evidence was in system Temp folders `workbench-legacy-acceptance-p5xulh3p`, `workbench-full-research-3dzbqnmt`, and `workbench-sections-regular-sm6tjzpp`; it is optional local evidence, not a dependency or something to publish. Fixture services were stopped; original source service was retained. Do not print tokens from fixture metadata.
 
