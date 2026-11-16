@@ -198,24 +198,44 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   value('Evidence that would help',row.expected_evidence);value('Review state',row.review_state||row.evidence_review_state);value('Review acceptance boundary',row.acceptance_scope);
   if(row.resolution?.answer_id)value(row.resolution.active===true||row.resolution.active===1?'Selected answer':row.resolution.active===false||row.resolution.active===0?'Previously selected answer':'Recorded answer selection',row.resolution.answer_id);
   concerns('Review concerns',row.review_concerns);concerns('Resolution concerns',row.resolution_concerns);
+  if(type==='source'){value('Source version',row.id);value('Artifact path',row.relative_path);value('Source SHA-256',row.sha256,{required:true});value('Build',row.binary_build_id,{required:true});value('Source availability',row.availability);if(typeof row.local_bytes_available==='boolean')value('Bytes on this host',row.local_bytes_available?'Available':'Not cached');}
+  if(row.query!==undefined&&row.searched_range!==undefined){value('Search query',row.query);value('Search method',row.method);value('Searched range',row.searched_range);value('Search coverage',row.coverage?.complete===true?'Complete declared coverage':row.coverage?.complete===false?'Partial coverage':'Coverage not recorded');value('Search outcome',row.outcome);box.append(node('p','An unsuccessful search is not proof of absence. Coverage applies only to the recorded source and searched range.','muted'));}
   if(row.artifact_version_id!==undefined||type==='evidence'){
    box.append(node('h5','Source citation'));value('Source version',row.artifact_version_id,{required:true});
    value('Build',row.binary_build_id,{required:true});value('Source SHA-256',row.source_sha256||row.sha256,{required:true});
    value('Locator',row.locator??row.locator_key,{required:true});value('Observation method',row.method,{required:true});value('Source limitations',row.limitations,{required:true});
    value('Source availability',row.availability);if(typeof row.local_bytes_available==='boolean')value('Bytes on this host',row.local_bytes_available?'Available':'Not cached');
   }
-  value('Source lineage',row.derived_from);value('Recorded review outcome',row.outcome);value('Reason',row.reason||row.rationale);value('Contributor identity',row.created_by||row.reviewer_id);
+  const version=type==='source'?null:row.artifact_version_id||row.scope?.artifact_version_id;
+  if(version)box.append(button('Open cited source',()=>session.open('source',version),Boolean(session.state().draft||session.state().pendingBody||session.state().busy)));
+  value('Source lineage',row.derived_from);value(row.query!==undefined?'Recorded search outcome':'Recorded review outcome',row.outcome);value('Reason',row.reason||row.rationale);value('Contributor identity',row.created_by||row.reviewer_id);
   const raw=node('details');raw.append(node('summary','Full record and provenance'),node('pre',JSON.stringify(row,null,2),'research-record'));box.append(raw);parent.append(box);
  }
  async function browse(resource,params={},cursor=null){related=params.subject_id?{resource,params}:null;const page=await session.readPage(resource,params,cursor);const state=session.state();if(resource==='answer-reviews'&&state.draft?.kind==='review_answer'&&!state.pendingBody&&page){const ids=state.draft.fields.supersedes||[];const rows=[...(state.draft.fields._reviewRows||[]),...page.items].filter(row=>ids.includes(row.id)&&row.answer_id===state.draft.fields.answer_id&&row.reviewer_id===state.principalId);session.change('_reviewRows',Array.from(new Map(rows.map(row=>[row.id,row])).values()));}}
  function page(parent,resource,params={}){
   const p=session.state().pages[resource];if(!p)return;
   parent.append(node('p',`Showing ${p.items.length} records from one snapshot. ${p.next_cursor?'More records are available.':'End of this collection.'}`,'muted'));
+  if(resource==='source-derivations'){
+   parent.append(node('p','Authored derivation assertions retain their history. A shared recorded run indicates common origin; matching hashes alone establish neither dependence nor independence. Grouping covers only this page.','muted'));
+   const origins=new Map();for(const row of p.items)if(row.origin_run?.id)origins.set(row.origin_run.id,(origins.get(row.origin_run.id)||0)+1);
+   for(const [id,count] of origins)if(count>1)parent.append(node('p',`Shared recorded origin within this page: ${id} (${count} assertions)`));
+  }
   for(const row of p.items){const card=node('article',undefined,'card');card.append(node('strong',row.claim||row.text||row.reason||row.id));
-   const type=resource==='findings'?'finding':resource==='questions'?'question':resource==='answers'?'answer':['evidence-links','answer-support'].includes(resource)?'evidence':null;
+   const type=resource==='findings'?'finding':resource==='questions'?'question':resource==='answers'?'answer':resource==='artifact-versions'?'source':['evidence-links','answer-support'].includes(resource)?'evidence':null;
    if(resource==='answers'&&session.state().selection?.type==='question')card.append(button('Select reviewed answer for resolution',async()=>{const context=await session.inspectAnswer(row.id);if(!context)return;buildResolutionOperation(context.entity,context.question,'Check eligibility');start('resolve_question',{question_id:context.question.id,expected_record_revision:context.question.record_revision,answer_id:row.id,rationale:'',_answer:context.entity,_answerQuestionRevision:context.question.record_revision});},Boolean(session.state().draft||session.state().pendingBody)||row.review_state!=='accepted'));
    if(type)card.append(button('Open '+type,()=>session.open(type,row.id),Boolean(session.state().draft||session.state().pendingBody)));
    const state=session.state(),draft=state.draft,editable=draft&&!state.pendingBody&&!state.busy;
+   const assertion=editable&&['create_finding','revise_finding'].includes(draft.kind)?(draft.kind==='revise_finding'?draft.fields.fields:draft.fields):null;
+   if(assertion?.scope?.derivation?.format===DERIVATION_FORMAT){
+    const changeScope=scope=>draft.kind==='revise_finding'?session.change('fields',{...session.state().draft.fields.fields,scope}):session.change('scope',scope);
+    if(resource==='artifact-versions'&&row.id!==assertion.scope.artifact_version_id)card.append(button('Use as parent source',()=>{
+     const current=session.state().draft,values=current.kind==='revise_finding'?current.fields.fields:current.fields;
+     const evidence=copy(values.evidence||[]);if(!evidence.some(item=>item.artifact_version_id===row.id)){if(evidence.length>=100)throw Error('At most 100 source records may support this action.');evidence.push({artifact_version_id:row.id,locator:'',method:'',limitations:''});}
+     const scope={...values.scope,derivation:{...values.scope.derivation,parent_version_id:row.id}};
+     if(current.kind==='revise_finding'){session.change('_supportMode','replace');session.change('fields',{...values,scope,evidence});}else{session.change('scope',scope);session.change('evidence',evidence);}
+    }));
+    if(resource==='index-runs'&&row.state==='published')card.append(button('Use recorded origin run',()=>changeScope({...assertion.scope,derivation:{...assertion.scope.derivation,index_run_id:row.id}})));
+   }
    if(resource==='artifact-versions'&&editable&&['create_finding','revise_finding','create_answer'].includes(draft.kind))card.append(button('Use pinned version',()=>{
     const latest=session.state().draft,revise=latest.kind==='revise_finding';
     const values=revise?latest.fields.fields:latest.fields,rows=values.evidence||[];
@@ -241,6 +261,12 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
     }));
    }
    if(resource==='evidence-links'&&editable&&draft.kind==='set_evidence_state')card.append(button('Use as replacement support',()=>session.change('_replacement',copy(row)),row.state!=='available'||row.id===draft.fields.evidence_link_id));
+   if(resource==='source-derivations'){
+    card.append(node('p',row.is_current?'Current assertion':'Historical assertion'),node('p',row.archived?'Archived finding':'Active finding'),node('p','Recorded origin run: '+(row.origin_run?.id||'Not recorded')));
+    for(const [key,label] of [['available','Available'],['retracted','Retracted'],['superseded','Superseded']])card.append(node('p',label+' citations: '+(row.support_counts?.[key]??'Not included in this read')));
+    const locked=Boolean(state.draft||state.pendingBody||state.busy);card.append(button('Open parent source',()=>session.open('source',row.parent_version.id),locked),button('Open derived source',()=>session.open('source',row.child_version.id),locked),button('Open assertion finding',()=>session.open('finding',row.finding_id),locked));
+    presentRecord(card,'Parent source',row.parent_version,'source');presentRecord(card,'Derived source',row.child_version,'source');
+   }
    presentRecord(card,'Recorded details',row,type,true);parent.append(card);
   }
   parent.append(button('Restart collection',()=>browse(resource,params)),button('Next 20',()=>browse(resource,params,p.next_cursor),!p.next_cursor));
@@ -249,6 +275,7 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
  function actions(parent,state){
   const c=state.selection?.context,e=c?.entity;if(!e)return;
   const locked=Boolean(state.draft||state.pendingBody||state.busy)||!canResearch(state,'contribute');
+  if(c.entity_type==='source')parent.append(button('Record derivation assertion',()=>start('create_finding',derivationSeed(e,getContext()?.taskId)),locked));
   if(c.entity_type==='source')parent.append(button('Record scoped search',()=>start('record_negative_search',{artifact_version_id:e.id,query:'',method:'',searched_range:'',coverage:{},outcome:''}),locked));
   if(c.entity_type==='finding'){
    parent.append(button('Revise finding',()=>start('revise_finding',{finding_id:e.id,expected_record_revision:e.record_revision,fields:{claim:e.claim,scope:copy(e.scope||{}),classification:e.classification,uncertainty:e.uncertainty||''},rationale:'',_supportMode:'keep'}),locked||Boolean(e.archived_at)));
@@ -273,6 +300,10 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   function save(key,value){if(finding&&['claim','scope','classification','uncertainty','evidence'].includes(key))session.change('fields',{...session.state().draft.fields.fields,[key]:value});else session.change(key,value);}
   if(['create_finding','revise_finding','create_answer'].includes(kind))field(form,'Claim',values.claim,v=>save('claim',v));
   if(['create_finding','revise_finding'].includes(kind)){
+   if(values.scope?.derivation?.format===DERIVATION_FORMAT){
+    form.append(node('p','Derived source: '+values.scope.artifact_version_id),node('p','Parent source: '+(values.scope.derivation.parent_version_id||'Choose explicitly')),node('p','Recorded origin run: '+(values.scope.derivation.index_run_id||'Not recorded')),node('p','A shared recorded run indicates common origin. Matching hashes alone do not establish dependence or independence. Cite both sources with reviewed methods and limits.','muted'));
+    form.append(button('Browse parent source versions',()=>{collection='artifact-versions';return browse('artifact-versions');},state.busy),button('Browse published origin runs',()=>{collection='index-runs';return browse('index-runs');},state.busy),button('Clear origin run',()=>{const scope=copy((finding?session.state().draft.fields.fields:session.state().draft.fields).scope);delete scope.derivation.index_run_id;save('scope',scope);},state.busy));
+   }
    field(form,'Scope',values.scope,v=>save('scope',v),{json:true});field(form,'Classification',values.classification,v=>save('classification',v));field(form,'Uncertainty',values.uncertainty,v=>save('uncertainty',v));
    if(finding)field(form,'Source support',f._supportMode||(Object.hasOwn(values,'evidence')?'replace':'keep'),v=>session.change('_supportMode',v),{select:['keep','replace']});
   }

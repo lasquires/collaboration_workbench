@@ -30,7 +30,7 @@ Original SSG2 schema-4 data was backed up with SQLite-aware tooling, migrated on
 
 Read `docs/superpowers/plans/2026-11-16-source-criticism.md` and the source-criticism section of `docs/superpowers/specs/2026-11-12-collaborative-research-workspace-design.md`.
 
-Backend/controller and pure builders exist. The exact-source scoped-search action/form is wired and covered by a red-green DOM fixture (explicit coverage, no autosubmit, literal draft text, saved exact source). Source entry navigation, derivation controls, history presentation and browser acceptance remain unfinished. No new schema/table/version was introduced.
+Backend/controller and pure builders exist. The exact-source scoped-search action/form is wired and covered by a red-green DOM fixture (explicit coverage, no autosubmit, literal draft text, saved exact source). Source entry navigation, explicit parent/published-run controls, derivation history/support states, scoped-search presentation and hash/locator comparison are now wired. An independent read-only review found no important issues. A real authenticated browser fixture saved/read back a bounded negative search and a derivation with two authored citations and visible limitations. The larger conflicting-build/shared-run/mobile/recovery browser acceptance and final review remain unfinished. No new schema/table/version was introduced.
 
 Changed files:
 
@@ -47,10 +47,10 @@ GET `/v1/artifact-versions/{id}/context?project_id=...` exposes source context. 
 
 ### Next concrete work
 
-1. Wire source opening from catalog, existing Evidence comparison, observations and findings. Extend dashboard URL selection to accept source (currently finding/question/answer/evidence).
-2. Finish source-context actions/forms: the scoped-search form is implemented, but still needs browser acceptance and source entry navigation. Add derivation with parent-version and optional published-run picker. Never invent methods/limits or infer proof of absence.
-3. Render derivation/common-origin history with current/historical/archive/support states and parent/child/finding links. Reuse the existing Evidence browser and two-item comparison.
-4. Show conflicting builds side-by-side with readable exact hashes, locators, uncertainty and conclusion limits; do not select a winner automatically.
+1. Verify the newly wired source opening from catalog, citations, observations and scoped findings in the full acceptance fixture. Dashboard task-scoped URLs now accept source.
+2. Verify explicit parent-version and optional published-run selection, including wrong-input server rejection. Scoped-search and derivation forms now exist and preserve blank user-authored locator/method/limits until entered. Never infer proof of absence.
+3. Verify the new derivation/common-origin history with current/historical/archive/support states and parent/child/finding links against the larger fixture. Page-bounded shared-run grouping is explicit.
+4. The existing comparison now includes exact hashes/locators and a source/scope difference warning. Verify conflicting builds, uncertainty and conclusion limits in the actual browser; do not select a winner automatically.
 5. Exercise actual authenticated browser flows with two conflicting builds, two reports sharing an explicit run, bounded negative search, limitations, mobile, draft navigation and lost-response/stale recovery.
 6. Obtain independent review and run relevant regression gates. Only then close source-criticism tasks.
 7. Finish project/authority separation and final parent release audit. Existing source authority must not silently become app development authority. Verify per-project setup instructions and both Git-only/live modes against the release matrix.

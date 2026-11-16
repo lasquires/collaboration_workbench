@@ -114,3 +114,9 @@ assert.equal(model.matchesTaskTarget({project_id:'p',redirect:{from:taskId,to:'s
 assert.equal(model.matchesTaskTarget({project_id:'p',redirect:{from:'different',to:'survivor'},context:{task:{id:'survivor',project_id:'p'}}},'p',taskId,'task-workflows'),false);
 assert.deepEqual(plain(model.workspaceTarget('?panel=research&project_id=p&task_id='+taskId+'&entity_type=finding&entity_id=task-finding',[{id:'p'}])),{panel:'research',projectId:'p',taskId,entity:{type:'finding',id:'task-finding'}},'task knowledge links open the exact finding record');
 assert.equal(model.workspaceTarget('?panel=research&project_id=p&task_id='+taskId+'&entity_type=unknown&entity_id=x',[{id:'p'}]),null);
+
+assert.equal(model.workspaceTarget('?panel=research&project_id=p&task_id='+taskId+'&entity_type=source&entity_id=version',[{id:'p'}]).entity.type,'source');
+
+const exactComparison=model.compareObservations({identifier:'same',source_sha256:'a'.repeat(64),locator_key:{line:1},value:1},{identifier:'same',sha256:'b'.repeat(64),locator_key:{line:20},value:2});
+assert.ok(exactComparison.some(x=>x.key==='source_sha256'&&!x.same),'compare exact source bytes');
+assert.ok(exactComparison.some(x=>x.key==='locator_key'&&!x.same),'compare exact observation locations');

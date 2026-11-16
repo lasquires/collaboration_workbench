@@ -195,3 +195,43 @@ console.log('source criticism operation builder checks passed');
  assert.ok(!Object.hasOwn(saved,'rationale'),'no unrelated operation fields');assert.equal(r.state().draft,null);
  console.log('scoped search renderer checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
+
+(async()=>{
+ const doc={activeElement:null,createElement(tag){return new Element(tag,this);}},mount=new Element('main',doc),calls=[];
+ const child={id:'child',project_id:'p',sha256:'b'.repeat(64),binary_build_id:null,artifact_id:'artifact',relative_path:'report.js',kind:'file',availability:'available',local_bytes_available:true};
+ const context={entity_type:'source',entity:child,related:Object.fromEntries(['source-derivations','observations','negative-searches'].map(resource=>[resource,{resource,params:{project_id:'p',subject_id:child.id}}]))};
+ const r=views.create({mount,document:doc,getContext:()=>({projectId:'p',principalId:'author',activePanel:'research'}),storage:null,api:async(path,options)=>{
+  calls.push({path,options});if(path.includes('/context'))return {project_id:'p',revision:'store:1',context};
+  return {project_id:'p',revision:'store:1',items:path.includes('index-runs')?[{id:'published-run',project_id:'p',state:'published'},{id:'draft-run',project_id:'p',state:'draft'}]:[{...child},{id:'parent',project_id:'p',sha256:'c'.repeat(64)}],next_cursor:null};
+ }});
+ const all=n=>[n,...n.children.flatMap(all)],click=async label=>{const b=all(mount).find(n=>n.tagName==='button'&&n.textContent===label);assert.ok(b,'Missing control: '+label);assert.equal(b.disabled,false);await b.onclick();};
+ await r.load();await click('artifact versions');await click('Open source');assert.equal(r.state().selection.id,'child');
+ await click('Record derivation assertion');assert.equal(r.state().draft.fields.scope.artifact_version_id,'child');
+ await click('Browse parent source versions');
+ const parentButtons=all(mount).filter(n=>n.tagName==='button'&&n.textContent==='Use as parent source');assert.equal(parentButtons.length,1,'child cannot be its own parent');await parentButtons[0].onclick();
+ assert.equal(r.state().draft.fields.scope.derivation.parent_version_id,'parent');
+ assert.deepEqual(r.state().draft.fields.evidence.map(x=>x.artifact_version_id),['child','parent']);
+ assert.ok(r.state().draft.fields.evidence.every(x=>x.method===''&&x.limitations===''&&x.locator===''),'parent selection cannot invent evidence');
+ await click('Browse published origin runs');assert.equal(all(mount).filter(n=>n.textContent==='Use recorded origin run').length,1,'draft runs cannot be selected');await click('Use recorded origin run');
+ assert.equal(r.state().draft.fields.scope.derivation.index_run_id,'published-run');await click('Clear origin run');assert.ok(!Object.hasOwn(r.state().draft.fields.scope.derivation,'index_run_id'));
+ assert.equal(calls.filter(c=>c.options?.method==='POST').length,0,'source browsing and parent/run selection never write');
+ console.log('source navigation and derivation controls passed');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+
+(async()=>{
+ const doc={activeElement:null,createElement(tag){return new Element(tag,this);}},mount=new Element('main',doc);
+ const version=id=>({id,project_id:'p',sha256:'d'.repeat(64),binary_build_id:null,artifact_id:'artifact',relative_path:id,kind:'file',availability:'available',local_bytes_available:true});
+ const related=Object.fromEntries(['source-derivations','observations','negative-searches'].map(resource=>[resource,{resource,params:{project_id:'p',subject_id:'child'}}]));
+ const r=views.create({mount,document:doc,getContext:()=>({projectId:'p',principalId:'author',activePanel:'research'}),storage:null,api:async(path)=>{
+  if(path.includes('/context')){const id=path.includes('/parent/')?'parent':'child';return {project_id:'p',revision:'store:1',context:{entity_type:'source',entity:version(id),related:Object.fromEntries(Object.entries(related).map(([k,v])=>[k,{...v,params:{...v.params,subject_id:id}}]))}};}
+  const derivation={id:'revision',project_id:'p',finding_id:'finding',claim:'Authored relation',uncertainty:'Direction unresolved',is_current:false,archived:true,parent_version:version('parent'),child_version:version('child'),origin_run:{id:'shared-run',project_id:'p'},support_counts:{available:1,retracted:1,superseded:0}};
+  return {project_id:'p',revision:'store:1',subject_id:'child',items:path.includes('source-derivations')?[derivation,{...derivation,id:'revision2',finding_id:'finding2',is_current:true,archived:false}]:[{id:'search',project_id:'p',artifact_version_id:'child',query:'needle',method:'literal scan',searched_range:'lines 1–40',coverage:{complete:false},outcome:'No match in that range'}],next_cursor:null};
+ }});
+ const all=n=>[n,...n.children.flatMap(all)],click=async label=>{const b=all(mount).find(n=>n.textContent===label&&n.tagName==='button');assert.ok(b,label);await b.onclick();};
+ await r.open('source','child');assert.ok(all(mount).some(n=>n.textContent==='d'.repeat(64)),'source hash readable');
+ await click('Read source-derivations');for(const value of ['Historical assertion','Archived finding','Retracted citations: 1','Recorded origin run: shared-run','Shared recorded origin within this page: shared-run (2 assertions)','Open parent source','Open derived source','Open assertion finding'])assert.ok(all(mount).some(n=>n.textContent===value),value);
+ await click('Read negative-searches');for(const value of ['Search query','needle','Searched range','lines 1–40','Partial coverage','No match in that range'])assert.ok(all(mount).some(n=>n.textContent===value),value);
+ assert.ok(!all(mount).some(n=>n.textContent==='Recorded review outcome'),'search outcome must not imply independent review');
+ await click('Read source-derivations');await click('Open parent source');assert.equal(r.state().selection.id,'parent');assert.ok(!all(mount).some(n=>n.textContent==='Historical assertion'),'navigation does not present the previous source collection as new-source history');
+ console.log('source history and scoped search presentation passed');
+})().catch(e=>{console.error(e);process.exitCode=1;});
