@@ -502,12 +502,12 @@ class Handler(BaseHTTPRequestHandler):
                 if exact not in {"true", "false"}:
                     raise RoadmapError(400, "Exact must be true or false")
                 self._json(200, variable_occurrences(params.get("query", [""])[0], exact == "true"))
-            elif parsed.path in {'/assets/workspace-repositories.js','/assets/workspace-access.js','/assets/workspace-sharing.js','/assets/workspace-navigation.js','/assets/workspace-layout.js','/assets/workspace-live.js','/assets/workspace-research-session.js','/assets/workspace-research.js'} and not parsed.query:
+            elif parsed.path in {'/assets/workspace-repositories.js','/assets/workspace-access.js','/assets/workspace-sharing.js','/assets/workspace-navigation.js','/assets/workspace-layout.js','/assets/workspace-live.js','/assets/workspace-research-session.js','/assets/workspace-research.js','/assets/workspace-task-session.js','/assets/workspace-task-workflows.js'} and not parsed.query:
                 body=(ROOT/'docs'/parsed.path.rsplit('/',1)[-1]).read_bytes()
                 self.send_response(200);self.send_header('Content-Type','text/javascript; charset=utf-8')
                 self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(body)))
                 self.end_headers();self.wfile.write(body)
-            elif parsed.path in {"/", "/index.html", "/graph"} and not parsed.query:
+            elif parsed.path in {"/", "/index.html"} or (parsed.path == "/graph" and not parsed.query):
                 page = ROOT / "docs" / ("task-graph.html" if parsed.path == "/graph" else "roadmap-dashboard.html")
                 body = page.read_bytes(); self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store")
