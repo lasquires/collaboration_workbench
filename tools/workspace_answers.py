@@ -78,7 +78,7 @@ def _review_info(db,project,answer):
 def describe_answer(db,project,item):
     raw=research.scoped(db,'answers',project,item['id']);issues=concerns(db,project,raw);info=_review_info(db,project,raw)
     context=db.execute('SELECT * FROM answer_contexts WHERE project_id=? AND id=?',(project,raw['id'])).fetchone()
-    return {**item,**info,'review_state':'stale' if issues else info['review_state'],'review_concerns':issues,'pinned_context':dict(context) if context else None,'acceptance_scope':'this service authenticated the independent review; not automatic forensic proof'}
+    return {**item,**info,'review_state':'stale' if issues else info['review_state'],'review_concerns':issues,'pinned_context':dict(context) if context else None,'acceptance_scope':'Acceptance requires locally authenticated independent review; it is not automatic forensic proof'}
 
 
 def describe_question(db,project,item):

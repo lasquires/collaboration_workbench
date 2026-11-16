@@ -40,6 +40,10 @@ class AnswersTests(unittest.TestCase):
     def test_propose_review_and_explicit_resolution_are_distinct(self):
         proposed=self.propose();identity=proposed['id']
         self.assertEqual(self.answer(identity)['review_state'],'unreviewed')
+        boundary=self.answer(identity)['acceptance_scope']
+        self.assertIn('requires',boundary,'an unreviewed answer states acceptance requirements')
+        self.assertNotIn('authenticated the independent review',boundary,'projection cannot claim review already occurred')
+        self.assertIn('not automatic forensic proof',boundary)
         self.assertEqual(self.question()['state'],'open')
         with self.assertRaises(StoreError):self.resolve(identity)
         with self.assertRaises(StoreError):self.review(identity,actor=self.actor)
