@@ -1,6 +1,26 @@
 # Continue Collaboration Workbench
 
-Updated 2026-11-16. The app is not finished. This document is sufficient to resume without the original conversation.
+Updated 2026-11-16. The source-criticism application work and combined authenticated
+browser gate are now complete. See the delivery reconciliation in
+`docs/release-acceptance.md`, independent review in `docs/release-audit.md`, and
+repeatable commands in `docs/verification.md`. The older checkpoint below is
+retained as history. Production SSG2 authority migration/cutover remains a
+separate owner-coordinated gate; no production data was imported or switched.
+
+The continuation added a real-browser acceptance runner covering source entry
+links, conflicting builds, shared-origin reports, bounded searches, visible
+limitations, historical/archived/withdrawn support, phone layout, draft guards,
+lost-response exact retry and explicit stale reconciliation. The same runner
+onboards two disposable Git repositories and verifies project-isolated evidence
+and owner-only setup. It found and fixed hidden observation details and Windows
+Git subprocess stdin contention. `doctor` now reports actual synchronization,
+evidence and local-byte availability with actionable guidance.
+
+Final validation: 519 regular Python tests in 406.999s (zero failures/errors,
+one optional OpenSSL skip), all 14 existing Node suites, the combined authenticated
+browser gate, and both separately gated source-roundtrip scale cases (672.286s).
+The regular run followed the final code changes. Reproduction details and the
+scope of these results are in the release report and verification guide.
 
 ## Get the right checkout
 
@@ -39,7 +59,7 @@ An authenticated browser research loop was exercised end-to-end: finding from ex
 
 Original SSG2 schema-4 data was backed up with SQLite-aware tooling, migrated only in private copies to app schema 17, restored and tested through the normal launcher. Original rows/history were compared and the original authority was left unchanged. No production cutover has occurred.
 
-## Unfinished checkpoint: source criticism
+## Original handoff checkpoint: source criticism
 
 Read `docs/superpowers/plans/2026-11-16-source-criticism.md` and the source-criticism section of `docs/superpowers/specs/2026-11-12-collaborative-research-workspace-design.md`.
 
@@ -58,7 +78,7 @@ Typed derivation is an ordinary finding scope: `artifact_version_id` is the chil
 
 GET `/v1/artifact-versions/{id}/context?project_id=...` exposes source context. Related descriptors identify resources `source-derivations`, `observations`, `negative-searches` with exact project/subject parameters. Source derivation rows carry historical/current/archive flags and support_counts. Source versions can have null/absent binary_build_id. Read the implementation/tests for exact envelopes rather than inventing fields.
 
-### Next concrete work
+### Original next steps (superseded by delivery reconciliation)
 
 1. Verify the newly wired source opening from catalog, citations, observations and scoped findings in the full acceptance fixture. Dashboard task-scoped URLs now accept source.
 2. Verify explicit parent-version and optional published-run selection, including wrong-input server rejection. Scoped-search and derivation forms now exist and preserve blank user-authored locator/method/limits until entered. Never infer proof of absence.

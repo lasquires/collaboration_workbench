@@ -1,4 +1,4 @@
-> **Continuing development?** Start with [AGENTS.md](AGENTS.md) and [the self-contained handoff](docs/HANDOFF.md). Unfinished source-criticism work is on `codex/source-criticism-handoff`.
+> **Continuing development?** Start with [AGENTS.md](AGENTS.md) and [the handoff and delivery checkpoint](docs/HANDOFF.md). See [verification commands](docs/verification.md) for repeatable application acceptance.
 
 # Collaboration Workbench
 
@@ -44,7 +44,10 @@ paths do not belong in connected project repositories.
 
 ## Development status
 
-This is an actively developed prototype, not a complete release. Independent
+Application workflows have passed the synthetic delivery gates described in
+[release acceptance](docs/release-acceptance.md), including authenticated browser
+source criticism and two-project onboarding. Production SSG2 authority cutover
+remains a separate backed-up deployment gate. Independent
 startup, project registration, tasks, evidence indexing, matching hints, documents,
 question editing, and guarded core merge/reversal APIs are implemented.
 
@@ -60,7 +63,8 @@ require fresh previews and explicit conflict choices; later edits are preserved
 through reviewed compensation. Exact pending task requests survive reload.
 Authenticated browser flows cover these core actions, exact lost-response retries,
 reload recovery, stale-context reconciliation and narrow-screen task browsing.
-Unsaved drafts guard links and page unload. Final integration gates remain open; see the [task workflow plan](docs/superpowers/plans/2026-11-15-task-workflows.md).
+Unsaved drafts guard links and page unload. Current gate evidence is reconciled in
+the release report; the [task workflow plan](docs/superpowers/plans/2026-11-15-task-workflows.md) retains its original implementation checklist.
 
 Repository refresh pins committed source bytes and publishes bounded Unicode
 identifier-shaped indexes with explicit coverage. Dirty working copies remain
@@ -82,8 +86,8 @@ that an edit was not applied. The Findings & answers panel supports paged source
 pinned answer proposals, independent review, explicit resolution and evidence
 withdrawal. Observation and question cards open that workspace; map task links
 carry validated task scope. Frozen pending writes survive reload and require exact
-retry confirmation. Authoring integration remains under verification for the
-remaining observation/task-link, recovery and mobile browser paths; see the
+retry confirmation. Authenticated browser acceptance covers exact-source and
+task-scoped entry links, recovery, explicit reconciliation and phone layout; see the
 [authoring plan](docs/superpowers/plans/2026-11-15-research-authoring.md).
 [Explicit record concurrency](docs/record-concurrency.md) lets supported unrelated
 edits proceed with scoped revision guards. [Reviewed merge compensation](docs/merge-compensation.md) is implemented through
@@ -95,8 +99,9 @@ resolution and automatic review notices when support changes. Explicit journal
 sharing review can publish redacted disclosures or omission notices while keeping
 original notes and hashes unchanged locally. Reviewed task-prose disclosures through
 the scoped API and dashboard preserve private originals during compatible peer
-merges. Task and journal approvals recover exact pending requests after reload. Project migration, collaboration UI integration and final end-to-end/scale
-acceptance remain open. Large portable bundles use content-addressed chunks in Git
+merges. Task and journal approvals recover exact pending requests after reload.
+Project production migration remains separately gated; application integration
+and scale evidence is recorded in the release report. Large portable bundles use content-addressed chunks in Git
 and authenticated staged HTTP transfers; each piece is at most 4 MiB, with a
 256 MiB aggregate limit. Private live state verifies cached documents on restart.
 The default 20,000-token and extended 50,000-observation/10,000-task fixtures

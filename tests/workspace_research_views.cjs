@@ -225,13 +225,17 @@ console.log('source criticism operation builder checks passed');
  const r=views.create({mount,document:doc,getContext:()=>({projectId:'p',principalId:'author',activePanel:'research'}),storage:null,api:async(path)=>{
   if(path.includes('/context')){const id=path.includes('/parent/')?'parent':'child';return {project_id:'p',revision:'store:1',context:{entity_type:'source',entity:version(id),related:Object.fromEntries(Object.entries(related).map(([k,v])=>[k,{...v,params:{...v.params,subject_id:id}}]))}};}
   const derivation={id:'revision',project_id:'p',finding_id:'finding',claim:'Authored relation',uncertainty:'Direction unresolved',is_current:false,archived:true,parent_version:version('parent'),child_version:version('child'),origin_run:{id:'shared-run',project_id:'p'},support_counts:{available:1,retracted:1,superseded:0}};
-  return {project_id:'p',revision:'store:1',subject_id:'child',items:path.includes('source-derivations')?[derivation,{...derivation,id:'revision2',finding_id:'finding2',is_current:true,archived:false}]:[{id:'search',project_id:'p',artifact_version_id:'child',query:'needle',method:'literal scan',searched_range:'lines 1–40',coverage:{complete:false},outcome:'No match in that range'}],next_cursor:null};
+  const observation={id:'observation',project_id:'p',candidate_type:'observation',artifact_version_id:'child',identifier:'speed',namespace:'source',scope_key:'Ball',value:0,locator_key:{line:1},provenance:{method:'Read pinned fixture',limitations:'No runtime measurement'}};
+  return {project_id:'p',revision:'store:1',subject_id:'child',items:path.includes('source-derivations')?[derivation,{...derivation,id:'revision2',finding_id:'finding2',is_current:true,archived:false}]:path.includes('/observations?')?[observation]:[{id:'search',project_id:'p',artifact_version_id:'child',query:'needle',method:'literal scan',searched_range:'lines 1–40',coverage:{complete:false},outcome:'No match in that range'}],next_cursor:null};
  }});
  const all=n=>[n,...n.children.flatMap(all)],click=async label=>{const b=all(mount).find(n=>n.textContent===label&&n.tagName==='button');assert.ok(b,label);await b.onclick();};
  await r.open('source','child');assert.ok(all(mount).some(n=>n.textContent==='d'.repeat(64)),'source hash readable');
  await click('Read source-derivations');for(const value of ['Historical assertion','Archived finding','Retracted citations: 1','Recorded origin run: shared-run','Shared recorded origin within this page: shared-run (2 assertions)','Open parent source','Open derived source','Open assertion finding'])assert.ok(all(mount).some(n=>n.textContent===value),value);
  await click('Read negative-searches');for(const value of ['Search query','needle','Searched range','lines 1–40','Partial coverage','No match in that range'])assert.ok(all(mount).some(n=>n.textContent===value),value);
  assert.ok(!all(mount).some(n=>n.textContent==='Recorded review outcome'),'search outcome must not imply independent review');
+ await click('Read observations');
+ const readable=all(mount).filter(n=>n.tagName!=='pre').map(n=>n.textContent);
+ for(const value of ['Identifier','speed','Namespace','source','Scope','Ball','Observed value','0','Read pinned fixture','No runtime measurement'])assert.ok(readable.includes(value),`scoped observation displays ${value} outside collapsed provenance`);
  await click('Read source-derivations');await click('Open parent source');assert.equal(r.state().selection.id,'parent');assert.ok(!all(mount).some(n=>n.textContent==='Historical assertion'),'navigation does not present the previous source collection as new-source history');
  console.log('source history and scoped search presentation passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

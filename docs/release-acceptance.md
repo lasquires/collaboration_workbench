@@ -141,3 +141,64 @@ The subsequent regular Python regression on the source-criticism checkpoint ran
 skip. The two large `SourceRoundtripTests` were explicitly excluded and remain a
 separate scale gate. This is a current regression result, not completion of the
 remaining human-interface or authority-cutover acceptance requirements.
+
+## Delivery reconciliation (2026-11-16 continuation)
+
+This section supersedes the open **application** gates in the earlier snapshots.
+The original SSG2 production authority cutover remains external to this delivery.
+The checkout was cloned directly from `codex/source-criticism-handoff` at
+`07327f8807c326f0f0645ed0701f0ecf674d4082`; prior commits were preserved.
+
+| Application acceptance gate | Current evidence | Result and boundary |
+| --- | --- | --- |
+| Source opening from observation, catalog, finding and citation | `tests/source_criticism_browser.cjs` against the production authenticated HTTP handler | Exact source identities and task-scoped deep links survive each entry path; browsing never writes |
+| Conflicting builds and cautious comparison | Same browser fixture, two published source builds | Both distinct hashes, builds, locators and competing values appear; no winner is selected |
+| Explicit derivation and common origin | Two browser-authored reports with two reviewed citations each | Explicit parent and published run retained; wrong-input run rejected without a finding; shared run labeled as recorded common origin, with page-bounded grouping |
+| Retained interpretation and citation history | Browser revision, archive and citation withdrawal followed by parent history read | Current/historical/archive/support states and parent/child/finding links retained |
+| Bounded negative search and visible limits | Browser partial-coverage search and exact API readback | Literal query, source, method, range and outcome retained; another source has no matching search; unsuccessful search is explicitly not proof of absence |
+| Mobile, draft guards and recovery | Actual 390px browser, server commit followed by synthetic lost reply, reload and explicit retry; separate real stale rejection | No document overflow; authored fields survive navigation; reload sends no POST; retry bytes and request ID identical with one saved record; stale draft needs exact-context read, explicit adoption and a separate Save |
+| Independent projects and reusable onboarding | Browser owner previews/applies two unconfigured committed Git repositories, refreshes each and switches projects | Separate manifest UUIDs and isolated indexed evidence; schema/agent contract written; no DB in either project; contributor-only setup denied |
+| Git-only batching, merge alternatives and unchanged source repositories | `test_workspace_sync_service`, `test_workspace_git_roundtrip`, transport/sync/portable/recovery suites | Actual Git data-ref publishing and concurrent reconciliation retain history and alternatives; source branch/index/worktree retained; five-minute interval and quiet-period contracts covered |
+| Optional free self-hosted live mode | Shared HTTP, live service/client, live claims/review/replay suites | Authenticated project scope, opt-in hosting, offline reconciliation and explicit conflict review; no paid host provisioned |
+| Task, research, document, discussion and recovery parents | Regular Python suite, all 14 existing Node suites, joined authenticated task HTTP fixture and prior browser evidence above | Current APIs/controllers and parent-specific task acceptance gates pass; workflow acceptance does not imply native provenance |
+| Scale | `WORKBENCH_SCALE_GATE=1 python -B -X utf8 -m unittest tests.test_workspace_large_sync.SourceRoundtripTests -v` | Both 50,000 observations/10,000 tasks and 20,000 committed-token fixtures passed together: 2 tests, 672.286s; real Git plus two authenticated live clients |
+
+The combined browser gate found two real issues: scoped observations hid their
+identifier/value/method in collapsed provenance, and Git subprocesses inherited
+the service controller's blocked stdin pipe on Windows. Observation details are
+now readable beside citations. Git helpers use closed stdin for commands without
+input; transport commands that author objects retain their exact explicit bytes.
+The production timeout and test acceptance expectations were not relaxed.
+
+The parent release audit also found stale `doctor` guidance claiming Git sync was
+unimplemented. Doctor now reports actual scoped Git state, safe error/retry details,
+source/evidence status and a bounded local-byte availability summary, with actions
+for disabled, pending, failed and review-required states. Private bindings and
+cache details are omitted. The focused standalone module passed all 10 tests;
+the Git provenance/standalone/watch/capture/roundtrip check passed 39 tests in
+36.598s before the final all-helper stdin isolation pass.
+
+All 14 existing Node suites passed after integration. The combined authenticated
+browser gate passed with headless Microsoft Edge and the configured Python
+runtime. Independent read-only reviews covered the source UI/controller/backend,
+observation readability fix, standalone/project contracts and Git/live modes.
+See `docs/release-audit.md` and `docs/verification.md` for review boundaries and
+reproduction commands. The final regular-regression receipt is recorded below.
+
+Final code regression: **519 Python tests ran in 406.999 seconds, zero failures
+or errors, one optional OpenSSL-dependent skip**. This run followed all final
+doctor and Git stdin changes and excluded only `SourceRoundtripTests`, whose two
+separate successful scale results are recorded above. The final Node pass covered
+all 14 existing suites; the additional real-browser suite passed separately.
+
+### Production project authority remains a separate gate
+
+No legacy DB, private evidence, credentials or bearer tokens were copied into
+this repository. Application development used an ignored app-only local tracker;
+all acceptance stores were disposable. Original SSG2 files, its unrelated edits
+and its existing task authority were preserved. Historical copy-migration and
+restore evidence above remains valid only within its recorded scope. A real
+SSG2 deployment still requires access to authoritative data, supported backup,
+exact comparison, rollback evidence, owner coordination and an explicit audited
+cutover. Synthetic application acceptance neither performs nor authorizes that
+production switch.

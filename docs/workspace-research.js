@@ -192,6 +192,10 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   if(row.scope&&typeof row.scope==='object'){
    value('Identifier',row.scope.identifier);value('Namespace',row.scope.namespace);value('Scope',row.scope.scope_key);value('Task',row.scope.task_id);value('Occurrence',row.scope.occurrence_id);value('Area',row.scope.area_id);value('Scoped source version',row.scope.artifact_version_id);
   }
+  if(row.candidate_type==='observation'){
+   value('Identifier',row.identifier,{required:true});value('Namespace',row.namespace,{required:true});value('Scope',row.scope_key,{required:true});
+   value('Observed value',row.value,{required:true});
+  }
   value('Task',row.owner_task_id);value('Area',row.area_id);
   value(type==='question'?'Current question state':'Recorded state',row.state);
   if(row.recorded_state!==undefined&&row.recorded_state!==row.state)value('Previously recorded question state',row.recorded_state);
@@ -203,7 +207,7 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   if(row.artifact_version_id!==undefined||type==='evidence'){
    box.append(node('h5','Source citation'));value('Source version',row.artifact_version_id,{required:true});
    value('Build',row.binary_build_id,{required:true});value('Source SHA-256',row.source_sha256||row.sha256,{required:true});
-   value('Locator',row.locator??row.locator_key,{required:true});value('Observation method',row.method,{required:true});value('Source limitations',row.limitations,{required:true});
+   value('Locator',row.locator??row.locator_key,{required:true});value('Observation method',row.method??row.provenance?.method,{required:true});value('Source limitations',row.limitations??row.provenance?.limitations,{required:true});
    value('Source availability',row.availability);if(typeof row.local_bytes_available==='boolean')value('Bytes on this host',row.local_bytes_available?'Available':'Not cached');
   }
   const version=type==='source'?null:row.artifact_version_id||row.scope?.artifact_version_id;

@@ -8,6 +8,6 @@ Required modes: optional free self-hosted live collaboration, and Git-only synch
 
 Preserve draft/recovery behavior, exact retry bytes, authorization boundaries, unknown metadata, historical citations and explicit acceptance gates. Source observations, derivation assertions and negative searches have bounded meanings; none automatically establishes forensic proof or native parity.
 
-Use the FamilySearch/Puzzilla navigation workflow as inspiration: connected graph/tree, selection inspector, clear lineage and contextual research. Extend existing Evidence navigation rather than duplicating it. The source-criticism UI is unfinished; backend tests do not establish UI completion.
+Use the FamilySearch/Puzzilla navigation workflow as inspiration: connected graph/tree, selection inspector, clear lineage and contextual research. Extend existing Evidence navigation rather than duplicating it. Source criticism has a combined authenticated browser gate in tests/source_criticism_browser.cjs; backend tests alone do not establish UI completion. See docs/release-acceptance.md for current application evidence and the separate production cutover gate.
 
 Run task-relevant checks before claims or commits. Do not migrate, move or replace an existing project's authority database without an explicit audited cutover. Coordinate ownership before staging; commit only assigned files. See HANDOFF for this machine's legacy tracker and release gates.

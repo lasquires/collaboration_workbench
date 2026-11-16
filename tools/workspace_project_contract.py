@@ -130,7 +130,7 @@ def resolve_project_remote(repo, remote_name=None):
     if not root.is_dir():
         raise ValueError("Project repository does not exist")
     def git(*args):
-        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False, timeout=10)
+        proc = subprocess.run(["git", "-C", str(root), *args], stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=10)
         if proc.returncode:
             raise ValueError("Cannot inspect the supplied project repository")
         return proc.stdout.strip()

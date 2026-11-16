@@ -49,6 +49,15 @@ agent instructions, preserving unrelated content. Review and commit those three
 integration files using your normal Git workflow. The app does not commit or push
 them automatically.
 
+Doctor reports the actual `sync_state` and `git_sync` status with a state-specific
+`next_action`. Sharing is off until explicitly enabled; pending work and failed or
+review-required synchronization are distinct. `source_state` and `evidence_state`
+describe source inspection and indexing separately from shared research delivery.
+`source_bytes` counts locally cached and missing pinned versions within a bounded
+project scan; `complete: false` means more versions remain outside that summary.
+A successful connection alone does not establish synchronized research or native
+provenance. Private synchronization bindings and cache details are omitted.
+
 ## Use the workspace safely
 
 Open the app to select your project. Use scoped API/CLI transactions for tasks,

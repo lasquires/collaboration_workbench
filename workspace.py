@@ -227,13 +227,51 @@ def diagnose(directory,url=DEFAULT_URL):
     project=next((p for p in projects['items'] if p['id']==manifest['project_id']),None)
     connections=request(url,'/v1/repositories?'+urlencode({'project_id':manifest['project_id']})) if project else {'items':[]}
     connection=next((c for c in connections['items'] if Path(c['root']).resolve()==repo),None)
+    sync=None;source_bytes=None
+    if connection:
+        sync=request(url,'/v1/git-sync-status?'+urlencode({'project_id':manifest['project_id'],'repository_id':connection['id']}))
+        # Keep doctor bounded while checking byte availability across the
+        # project's pinned versions. The API exposes no local cache paths.
+        cursor=None;checked=available=0;complete=True
+        for _ in range(100):
+            query={'project_id':manifest['project_id'],'limit':'100'}
+            if cursor:query['cursor']=cursor
+            page=request(url,'/v1/artifact-versions?'+urlencode(query))
+            for version in page.get('items',[]):
+                checked+=1
+                if version.get('local_bytes_available') is True:available+=1
+            cursor=page.get('next_cursor')
+            if not cursor:break
+        else:complete=False
+        source_bytes={'versions_checked':checked,'local_bytes_available':available,
+                      'bytes_missing':checked-available,'complete':complete}
+    sync_state=sync.get('state','off') if sync else 'not connected'
+    actions={
+        'off':'Git sharing is off; enable it explicitly and select portable data in Repositories to synchronize.',
+        'pending':'Git sharing has pending changes; wait for the quiet period or choose Sync now.',
+        'queued':'A Git synchronization is queued; check Repositories for its result.',
+        'syncing':'Git synchronization is running; check Repositories again shortly.',
+        'current':'Shared research is synchronized; check source/evidence state separately.',
+        'failed':'Git synchronization failed; review the safe error below, then retry after correcting the connection or repository.',
+        'review-required':'Git changes need explicit conflict review in Repositories before synchronization can continue.',
+        'sharing-review-required':'Journal sharing needs review before Git export can continue.',
+        'live-standby':'Live collaboration is active; Git synchronization is on standby.',
+    }
+    next_action=('Run setup --apply against this local service' if not connection else
+                 actions.get(sync_state,'Check Repositories for the current Git synchronization state.'))
     return {'connected':connection is not None,'protocol':projects['api_version'],'project_id':manifest['project_id'],
             'repository':str(repo),'head_commit':metadata.head_commit,'branch':metadata.branch,'dirty':metadata.dirty,
             'service':url,'service_revision':projects['revision'],
-            'sync_state':connection['sync_state'] if connection else 'not connected',
+            'sync_state':sync_state,
+            'git_sync':({key:sync.get(key) for key in ('enabled','export_selected','requested','state','git_state',
+                'error','retry_after','interval_seconds','quiet_seconds','last_attempt') if key in sync} if sync else None),
             'source_state':connection['source_state'] if connection else 'not connected',
             'source_revision':connection['source_revision'] if connection else None,
-            'next_action':'Git synchronization is not yet implemented' if connection else 'Run setup --apply against this local service'}
+            'evidence_state':connection.get('evidence_state') if connection else 'not connected',
+            'evidence_head':connection.get('evidence_head') if connection else None,
+            'evidence_manifest_id':connection.get('evidence_manifest_id') if connection else None,
+            'source_bytes':source_bytes,
+            'next_action':next_action}
 
 
 def main(argv=None):

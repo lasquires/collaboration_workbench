@@ -30,7 +30,7 @@ def _run(root: Path, *args: str, timeout: float = MAX_COMMAND_SECONDS,
     captured = [bytearray(), bytearray()]
     overflow = [False, False]
     try:
-        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         def drain(stream, index):
             while True:
                 chunk = stream.read(65536)

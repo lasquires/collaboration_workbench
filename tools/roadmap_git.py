@@ -52,6 +52,9 @@ def _run(git: str, repo: Path, *args: str, check: bool = True) -> subprocess.Com
     try:
         result = subprocess.run(
             [git, "-C", str(repo), *args],
+            # Read-only commands never consume input. Inheriting a service's
+            # piped stdin can contend with its controller on Windows.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
