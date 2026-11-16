@@ -30,7 +30,7 @@ Original SSG2 schema-4 data was backed up with SQLite-aware tooling, migrated on
 
 Read `docs/superpowers/plans/2026-11-16-source-criticism.md` and the source-criticism section of `docs/superpowers/specs/2026-11-12-collaborative-research-workspace-design.md`.
 
-Backend/controller and pure builders exist; the actual UI wiring and browser acceptance remain unfinished. No new schema/table/version was introduced.
+Backend/controller and pure builders exist. The exact-source scoped-search action/form is wired and covered by a red-green DOM fixture (explicit coverage, no autosubmit, literal draft text, saved exact source). Source entry navigation, derivation controls, history presentation and browser acceptance remain unfinished. No new schema/table/version was introduced.
 
 Changed files:
 
@@ -48,7 +48,7 @@ GET `/v1/artifact-versions/{id}/context?project_id=...` exposes source context. 
 ### Next concrete work
 
 1. Wire source opening from catalog, existing Evidence comparison, observations and findings. Extend dashboard URL selection to accept source (currently finding/question/answer/evidence).
-2. Add source-context actions and forms: record scoped negative search with explicit complete/partial coverage, query, method, searched range and outcome; record derivation with parent-version and optional published-run picker. Never invent methods/limits or infer proof of absence.
+2. Finish source-context actions/forms: the scoped-search form is implemented, but still needs browser acceptance and source entry navigation. Add derivation with parent-version and optional published-run picker. Never invent methods/limits or infer proof of absence.
 3. Render derivation/common-origin history with current/historical/archive/support states and parent/child/finding links. Reuse the existing Evidence browser and two-item comparison.
 4. Show conflicting builds side-by-side with readable exact hashes, locators, uncertainty and conclusion limits; do not select a winner automatically.
 5. Exercise actual authenticated browser flows with two conflicting builds, two reports sharing an explicit run, bounded negative search, limitations, mobile, draft navigation and lost-response/stale recovery.

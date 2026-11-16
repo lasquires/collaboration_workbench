@@ -249,6 +249,7 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
  function actions(parent,state){
   const c=state.selection?.context,e=c?.entity;if(!e)return;
   const locked=Boolean(state.draft||state.pendingBody||state.busy)||!canResearch(state,'contribute');
+  if(c.entity_type==='source')parent.append(button('Record scoped search',()=>start('record_negative_search',{artifact_version_id:e.id,query:'',method:'',searched_range:'',coverage:{},outcome:''}),locked));
   if(c.entity_type==='finding'){
    parent.append(button('Revise finding',()=>start('revise_finding',{finding_id:e.id,expected_record_revision:e.record_revision,fields:{claim:e.claim,scope:copy(e.scope||{}),classification:e.classification,uncertainty:e.uncertainty||''},rationale:'',_supportMode:'keep'}),locked||Boolean(e.archived_at)));
    const kind=e.archived_at?'restore_finding':'archive_finding';parent.append(button(e.archived_at?'Restore finding':'Archive finding',()=>start(kind,{finding_id:e.id,expected_record_revision:e.record_revision,rationale:''}),locked));
@@ -286,6 +287,14 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
     support.append(button('Remove source '+(index+1),()=>{if(invalidInputs.size)throw Error('Correct unfinished structured fields before removing a source.');save('evidence',(finding?session.state().draft.fields.fields:session.state().draft.fields).evidence.filter((_,i)=>i!==index));}));form.append(support);
    }
   }
+  if(kind==='record_negative_search'){
+   form.append(node('p','Exact source version: '+f.artifact_version_id),node('p','An unsuccessful search is not proof of absence. State the searched range and remaining coverage limits.','muted'));
+   field(form,'Search query',f.query,v=>save('query',v));
+   field(form,'Search method',f.method,v=>save('method',v));
+   field(form,'Searched range',f.searched_range,v=>save('searched_range',v));
+   field(form,'Search coverage',typeof f.coverage?.complete==='boolean'?(f.coverage.complete?'complete':'partial'):'',v=>save('coverage',v?{...(session.state().draft.fields.coverage||{}),complete:v==='complete'}:{}),{select:['partial','complete']});
+   field(form,'Search outcome',f.outcome,v=>save('outcome',v));
+  }
   if(kind==='create_answer'){form.append(button('Browse evidence links',()=>{collection='evidence-links';return browse('evidence-links');},state.busy));summary(form,'Selected pinned link identities',f.evidence_link_ids||[]);for(const id of f.evidence_link_ids||[])form.append(button('Remove selected link '+id,()=>save('evidence_link_ids',session.state().draft.fields.evidence_link_ids.filter(value=>value!==id))));}
   if(kind==='review_answer'){
    field(form,'Independent outcome',f.outcome,v=>save('outcome',v),{select:['accepted','rejected']});
@@ -296,7 +305,7 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
    field(form,'Support state',f.state,v=>save('state',v),{select:['retracted','superseded']});
    if(f.state==='superseded')field(form,'Reviewed replacement evidence record',f._replacement||{},v=>save('_replacement',v),{json:true});
    field(form,'Reason',f.reason,v=>save('reason',v));
-  }else if(!['create_finding','create_answer'].includes(kind))field(form,'Rationale',f.rationale,v=>save('rationale',v));
+  }else if(!['create_finding','create_answer','record_negative_search'].includes(kind))field(form,'Rationale',f.rationale,v=>save('rationale',v));
   if(kind==='resolve_question'){summary(form,'Selected answer',f._answer||{id:f.answer_id,status:'Read current answer context before rebuilding this recovered draft.'});form.append(button('Read selected answer context',async()=>{const context=await session.inspectAnswer(f.answer_id);if(context){session.change('_answer',context.entity);session.change('_answerQuestionRevision',context.question.record_revision);}},state.busy));}
   const error=node('p',localError);error.dataset.editorError='';error.setAttribute('role','alert');form.append(error);
   if(d.needsReconcile){

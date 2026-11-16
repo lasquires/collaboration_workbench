@@ -166,3 +166,32 @@ assert.throws(()=>views.buildNegativeSearchOperation({...searchFields,coverage:{
 assert.equal(views.operationForDraft({projectId:'p',selection:{context:{entity_type:'source',entity:{id:'child',project_id:'p'}}},draft:{kind:'record_negative_search',fields:searchFields}}).artifact_version_id,'child');
 assert.throws(()=>views.operationForDraft({projectId:'p',selection:{context:{entity_type:'source',entity:{id:'child',project_id:'foreign'}}},draft:{kind:'record_negative_search',fields:searchFields}}),/project|target/i);
 console.log('source criticism operation builder checks passed');
+
+(async()=>{
+ const doc={activeElement:null,createElement(tag){return new Element(tag,this);}},mount=new Element('main',doc),calls=[],stored=new Map();
+ const source={id:'search-source',project_id:'p',sha256:'a'.repeat(64),binary_build_id:null,artifact_id:'artifact',relative_path:'src/exact.js',kind:'file',availability:'available',local_bytes_available:true};
+ const context={entity_type:'source',entity:source,related:Object.fromEntries(['source-derivations','observations','negative-searches'].map(resource=>[resource,{resource,params:{project_id:'p',subject_id:source.id}}]))};
+ let saved;
+ const r=views.create({mount,document:doc,getContext:()=>({projectId:'p',principalId:'author',activePanel:'research'}),storage:{getItem:k=>stored.get(k)??null,setItem:(k,v)=>stored.set(k,v),removeItem:k=>stored.delete(k)},api:async(path,options)=>{
+  calls.push({path,options});if(options?.method==='POST'){const body=JSON.parse(options.body);saved=body.operations[0];return {project_id:'p',revision:'store:2',request_id:body.request_id,changed_records:[{type:'negative_search',id:saved.id}]};}
+  if(path.includes('/context'))return {project_id:'p',revision:saved?'store:2':'store:1',context};
+  return {project_id:'p',revision:'store:1',items:[],next_cursor:null};
+ }});
+ const all=n=>[n,...n.children.flatMap(all)],click=async label=>{const b=all(mount).find(n=>n.tagName==='button'&&n.textContent===label);assert.ok(b,'Missing control: '+label);assert.equal(b.disabled,false);await b.onclick();};
+ await r.open('source',source.id);await click('Record scoped search');
+ assert.equal(r.state().draft.fields.artifact_version_id,source.id);
+ assert.deepEqual(r.state().draft.fields.coverage,{},'coverage is never assumed complete or partial');
+ assert.ok(all(mount).some(n=>n.textContent.includes('not proof of absence')));
+ const input=(label,value)=>{const n=mount.querySelectorAll('[data-research-field]').find(n=>n.dataset.researchField===label);assert.ok(n,label);n.value=value;n.oninput();};
+ input('Search query','<script>needle</script>');input('Search method','Literal search');input('Searched range','lines 1–40 only');input('Search outcome','No matching text; generated code not searched');
+ let form=all(mount).find(n=>n.tagName==='form');await form.onsubmit({preventDefault(){}});
+ assert.equal(calls.filter(c=>c.options?.method==='POST').length,0,'explicit coverage required before save');
+ input('Search coverage','partial');
+ assert.equal(r.state().draft.fields.coverage.complete,false);
+ assert.equal(r.state().draft.fields.query,'<script>needle</script>','rerender retains authored text literally');
+ assert.equal(calls.filter(c=>c.options?.method==='POST').length,0,'choosing coverage does not submit');
+ form=all(mount).find(n=>n.tagName==='form');await form.onsubmit({preventDefault(){}});
+ assert.equal(saved.artifact_version_id,source.id);assert.deepEqual(saved.coverage,{complete:false});assert.equal(saved.searched_range,'lines 1–40 only');assert.ok(saved.id);
+ assert.ok(!Object.hasOwn(saved,'rationale'),'no unrelated operation fields');assert.equal(r.state().draft,null);
+ console.log('scoped search renderer checks passed');
+})().catch(e=>{console.error(e);process.exitCode=1;});
