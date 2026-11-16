@@ -1,3 +1,5 @@
+> **Continuing development?** Start with [AGENTS.md](AGENTS.md) and [the self-contained handoff](docs/HANDOFF.md). Unfinished source-criticism work is on `codex/source-criticism-handoff`.
+
 # Collaboration Workbench
 
 A standalone local research workspace for software reconstruction. Connect Git
