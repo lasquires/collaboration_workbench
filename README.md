@@ -119,3 +119,10 @@ merge lineage while preserving original task attribution. Exact research links
 open the selected finding or question; authored classifications remain assertions,
 not forensic acceptance. Discussion shows the retained task journal and audit
 history. The action filter is local and never submits or changes a draft.
+
+Research details present the authored claim, unresolved limitations, exact known
+scope, current review concerns and pinned source citation as readable fields.
+Complete original records remain available under **Full record and provenance**.
+Historical answer selections are labeled separately from active selections.
+A field omitted by a bounded read is distinguished from an explicitly unrecorded
+value; opening the evidence context provides the full pinned citation.

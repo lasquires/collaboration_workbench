@@ -115,3 +115,38 @@ assert.equal(views.canResearch({capabilities:{authenticated:true,granted:['contr
  cleanupFails=false;await all(mount).find(n=>n.tagName==='button'&&n.textContent==='Retry exact request').onclick();assert.equal(r.state().pendingBody,null);assert.equal(stored.size,0);assert.equal(bodies.length,2);assert.equal(bodies[1],bodies[0],'cleanup recovery retries exactly the original frozen bytes');
  console.log('research cleanup recovery control checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
+
+(async()=>{
+ const doc={activeElement:null,createElement(tag){return new Element(tag,this);}},mount=new Element('main',doc),calls=[];
+ const entities={finding:{...finding,claim:'<img src=x onerror=alert(1)>',review_concerns:['Conflicting witness remains unresolved']},evidence:{id:'e',project_id:'p',state:'available',subject_type:'finding_revision',subject_id:'revision',artifact_version_id:'v',source_sha256:'a'.repeat(64),binary_build_id:'build-A',locator:{line:7},method:'Read pinned fixture',limitations:'Synthetic, not native'}};
+ const r=views.create({mount,document:doc,getContext:()=>({projectId:'p',principalId:'author',activePanel:'research'}),storage:{getItem:()=>null,setItem(){},removeItem(){}},api:async(path,options)=>{
+  calls.push({path,options});
+  if(path.includes('/context')){const type=path.includes('evidence-links')?'evidence':path.includes('/questions/')?'question':path.includes('/answers/')?'answer':'finding';return {project_id:'p',revision:'store:1',context:{entity_type:type,entity:JSON.parse(JSON.stringify(entities[type])),...(type==='answer'?{question:entities.question}:{}),related:{}}};}
+  return {project_id:'p',revision:'store:1',items:[],next_cursor:null,capabilities:{authenticated:true,granted:['contribute']}};
+ }});
+ entities.question={...question,state:'investigating',recorded_state:'resolved',resolution:{answer_id:'a',active:0},resolution_concerns:['Support was withdrawn']};
+ entities.answer={...accepted,id:'a',project_id:'p',acceptance_scope:'Independent review is bounded; it is not forensic proof'};
+ entities.finding.scope={...entities.finding.scope,occurrence_id:'exact-occurrence',area_id:'exact-area'};
+ const all=n=>[n,...n.children.flatMap(all)];await r.load();await r.open('finding','f');
+ assert.ok(all(mount).some(n=>n.textContent==='What we think'),'selected finding exposes its authored claim as readable content');
+ assert.ok(all(mount).some(n=>n.textContent==='Still unexplained'),'selected finding gives uncertainty its own visible label');
+ assert.ok(all(mount).some(n=>n.textContent==='Not runtime proof'),'uncertainty is visible outside a raw JSON dump');
+ for(const value of ['exact-occurrence','exact-area'])assert.ok(all(mount).some(n=>n.textContent===value),'known scope identities are readable without opening raw provenance');
+ assert.ok(all(mount).some(n=>n.textContent==='Conflicting witness remains unresolved'),'review concerns remain visible');
+ const raw=all(mount).find(n=>n.tagName==='details'&&n.children.some(c=>c.tagName==='summary'&&c.textContent==='Full record and provenance'));
+ assert.ok(raw,'complete original record remains available in a collapsed detail');
+ assert.ok(all(raw).some(n=>n.tagName==='pre'&&n.textContent.includes('custom_scope')),'unknown authored scope remains lossless');
+ assert.ok(!all(mount).some(n=>n.tagName==='img'),'readable research fields still render source markup literally');
+ await r.open('evidence','e');
+ for(const text of ['Source citation','Source version','Build','Source SHA-256','Locator','Observation method','Source limitations','Read pinned fixture','Synthetic, not native'])assert.ok(all(mount).some(n=>n.textContent===text),`readable source context exposes ${text}`);
+ delete entities.evidence.source_sha256;entities.evidence.binary_build_id=null;await r.open('evidence','e');
+ assert.ok(all(mount).some(n=>n.textContent==='Not included in this read'),'a source field omitted by the projection is not claimed missing from storage');
+ assert.ok(all(mount).some(n=>n.textContent==='Not recorded'),'an explicit null source field remains distinct from omitted metadata');
+ await r.open('question','q');
+ assert.ok(all(mount).some(n=>n.textContent==='Support was withdrawn'),'effective reopened-state concerns stay visible');
+ assert.ok(all(mount).some(n=>n.textContent==='Previously selected answer'),'inactive historical selection is not presented as current acceptance');
+ await r.open('answer','a');
+ assert.ok(all(mount).some(n=>n.textContent==='Independent review is bounded; it is not forensic proof'),'accepted review keeps its explicit forensic boundary visible');
+ assert.equal(calls.filter(c=>c.options?.method==='POST').length,0,'readable context never changes research state');
+ console.log('readable research context checks passed');
+})().catch(e=>{console.error(e);process.exitCode=1;});

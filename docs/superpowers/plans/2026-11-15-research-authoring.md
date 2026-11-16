@@ -81,3 +81,26 @@ Steps:
 2. Wire the standalone component and shared task selection; update help with the distinction between authorship, independent review and forensic acceptance.
 3. Run context/finding/answer/shared HTTP tests and all Node suites. Browser fixtures must exercise observation->hint->finding->answer->independent review->resolution, the question-first path, withdrawal reopening, historical versions, stale409, lost response/reload, permissions and narrow-screen overflow. Use independent authenticated principals; do not fabricate acceptance by changing the actor label.
 4. Independent code review and a final scope-appropriate regular regression gate precede scoped commit/push. Parent completion has its own acceptance transaction; source authority migration and structured task workflows remain separate.
+
+
+## Readable research context checkpoint
+
+The accepted human-interface design now presents claims, authored classification,
+uncertainty, exact known task/occurrence/area/source scope, review/resolution
+concerns and pinned source tuples before a collapsed full original record.
+No original field or unknown scope is removed. Active and historical answer
+selections remain distinct; bounded review meaning stays visible. Omitted read
+metadata is not represented as a value missing from storage.
+
+Actual DOM/session red-green fixtures cover readable concerns/limitations,
+historical selection, unknown scope retention, literal source markup and omitted
+versus null source fields. Independent review found no fidelity or state defect.
+Authenticated phone-width browser checks showed document/body375px within390px,
+collapsed raw provenance, readable full citation and working local draft discard.
+After a second client revised uncertainty, a stale browser save retained authored
+claim/rationale and disabled Save. Explicit latest-context read and five field
+choices preserved the remote limitation and draft claim. Reconciliation did not
+save; the final explicit save produced record revision3 with all3revisions retained.
+The disposable fixture was stopped and viewport restored. Broader common-origin,
+conflicting-build/negative-search presentation and source authority separation
+remain distinct gates; this checkpoint does not establish native proof.

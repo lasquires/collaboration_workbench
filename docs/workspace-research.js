@@ -157,6 +157,36 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   wrap.append(caption,input);parent.append(wrap);return input;
  }
  function summary(parent,label,value){parent.append(node('h4',label),node('pre',typeof value==='string'?value:JSON.stringify(value,null,2),'research-record'));}
+ function presentRecord(parent,label,row,type=null,compact=false){
+  const box=node('section',undefined,compact?'research-detail':'card research-detail');if(!compact)box.append(node('h4',label));
+  const display=value=>typeof value==='string'?value:JSON.stringify(value);
+  function value(name,item,{required=false}={}){
+   if(item===undefined||item===null||item===''){if(!required)return;item=item===undefined?'Not included in this read':'Not recorded';}
+   box.append(node('h5',name),node('p',display(item)));
+  }
+  function concerns(name,items){if(!Array.isArray(items)||!items.length)return;box.append(node('h5',name));for(const item of items)box.append(node('p',display(item)));}
+  if(!compact&&row.claim!==undefined)value('What we think',row.claim,{required:true});
+  if(!compact&&row.text!==undefined)value(type==='question'?'Open question':'Recorded text',row.text,{required:true});
+  if(row.classification!==undefined){value('Authored classification',row.classification);box.append(node('p','An authored classification is not independent forensic acceptance.','muted'));}
+  if(row.uncertainty!==undefined)value('Still unexplained',row.uncertainty,{required:true});
+  if(row.scope&&typeof row.scope==='object'){
+   value('Identifier',row.scope.identifier);value('Namespace',row.scope.namespace);value('Scope',row.scope.scope_key);value('Task',row.scope.task_id);value('Occurrence',row.scope.occurrence_id);value('Area',row.scope.area_id);value('Scoped source version',row.scope.artifact_version_id);
+  }
+  value('Task',row.owner_task_id);value('Area',row.area_id);
+  value(type==='question'?'Current question state':'Recorded state',row.state);
+  if(row.recorded_state!==undefined&&row.recorded_state!==row.state)value('Previously recorded question state',row.recorded_state);
+  value('Evidence that would help',row.expected_evidence);value('Review state',row.review_state||row.evidence_review_state);value('Review acceptance boundary',row.acceptance_scope);
+  if(row.resolution?.answer_id)value(row.resolution.active===true||row.resolution.active===1?'Selected answer':row.resolution.active===false||row.resolution.active===0?'Previously selected answer':'Recorded answer selection',row.resolution.answer_id);
+  concerns('Review concerns',row.review_concerns);concerns('Resolution concerns',row.resolution_concerns);
+  if(row.artifact_version_id!==undefined||type==='evidence'){
+   box.append(node('h5','Source citation'));value('Source version',row.artifact_version_id,{required:true});
+   value('Build',row.binary_build_id,{required:true});value('Source SHA-256',row.source_sha256||row.sha256,{required:true});
+   value('Locator',row.locator??row.locator_key,{required:true});value('Observation method',row.method,{required:true});value('Source limitations',row.limitations,{required:true});
+   value('Source availability',row.availability);if(typeof row.local_bytes_available==='boolean')value('Bytes on this host',row.local_bytes_available?'Available':'Not cached');
+  }
+  value('Source lineage',row.derived_from);value('Recorded review outcome',row.outcome);value('Reason',row.reason||row.rationale);value('Contributor identity',row.created_by||row.reviewer_id);
+  const raw=node('details');raw.append(node('summary','Full record and provenance'),node('pre',JSON.stringify(row,null,2),'research-record'));box.append(raw);parent.append(box);
+ }
  async function browse(resource,params={},cursor=null){related=params.subject_id?{resource,params}:null;const page=await session.readPage(resource,params,cursor);const state=session.state();if(resource==='answer-reviews'&&state.draft?.kind==='review_answer'&&!state.pendingBody&&page){const ids=state.draft.fields.supersedes||[];const rows=[...(state.draft.fields._reviewRows||[]),...page.items].filter(row=>ids.includes(row.id)&&row.answer_id===state.draft.fields.answer_id&&row.reviewer_id===state.principalId);session.change('_reviewRows',Array.from(new Map(rows.map(row=>[row.id,row])).values()));}}
  function page(parent,resource,params={}){
   const p=session.state().pages[resource];if(!p)return;
@@ -191,7 +221,7 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
     }));
    }
    if(resource==='evidence-links'&&editable&&draft.kind==='set_evidence_state')card.append(button('Use as replacement support',()=>session.change('_replacement',copy(row)),row.state!=='available'||row.id===draft.fields.evidence_link_id));
-   summary(card,'Recorded details',row);parent.append(card);
+   presentRecord(card,'Recorded details',row,type,true);parent.append(card);
   }
   parent.append(button('Restart collection',()=>browse(resource,params)),button('Next 20',()=>browse(resource,params,p.next_cursor),!p.next_cursor));
  }
@@ -270,7 +300,7 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   const columns=node('div',undefined,'research-columns'),list=node('section'),detail=node('section'),edit=node('section');
   list.setAttribute('aria-label','Research records');detail.setAttribute('aria-label','Selected research context');edit.setAttribute('aria-label','Research authoring');
   page(list,related?.resource||collection,related?.params||{});
-  if(state.selection?.context){summary(detail,'Current '+state.selection.type,state.selection.context.entity);if(state.selection.context.question)summary(detail,'Current question',state.selection.context.question);actions(detail,state);}
+  if(state.selection?.context){presentRecord(detail,'Current '+state.selection.type,state.selection.context.entity,state.selection.type);if(state.selection.context.question)presentRecord(detail,'Current question',state.selection.context.question,'question');actions(detail,state);}
   else detail.append(node('p','Open a record to inspect its pinned evidence, history and current concerns.'));
   editor(edit,state);columns.append(list,detail,edit);box.append(columns);host.replaceChildren(box);
   if(key){const replacement=Array.from(host.querySelectorAll('[data-research-field]')).find(n=>n.dataset.researchField===key);if(replacement){replacement.value=caret.value;replacement.focus();if(typeof replacement.setSelectionRange==='function'&&caret.start!==null)replacement.setSelectionRange(caret.start,caret.end);}}
