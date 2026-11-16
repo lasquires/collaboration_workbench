@@ -111,3 +111,11 @@ The [hybrid collaboration design](docs/superpowers/specs/2026-11-13-hybrid-colla
 covers optional free self-hosting, Git-only fallback, batched synchronization and
 offline reconciliation. Shared hosting is explicitly enabled; the default remains local. Source snapshots,
 portable research synchronization and forensic acceptance have separate status.
+
+Selected task workflows include Overview, Subtasks, Knowledge, Questions,
+Discussion and History. Sections use explicit bounded reads without advancing
+an authored draft's base revision. Knowledge and questions include active task
+merge lineage while preserving original task attribution. Exact research links
+open the selected finding or question; authored classifications remain assertions,
+not forensic acceptance. Discussion shows the retained task journal and audit
+history. The action filter is local and never submits or changes a draft.

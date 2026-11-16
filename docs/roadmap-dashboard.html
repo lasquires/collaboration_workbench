@@ -51,7 +51,14 @@
 const legacyTaskMapOperationKinds=['op:"create"','op:"update"','op:"claim"','op:"release"','op:"journal"','op:"add_link"'];
 
 function matchesTaskTarget(response,projectId,taskId,panel){const task=response?.context?.task,redirect=response?.redirect;return response?.project_id===projectId&&task?.project_id===projectId&&(task.id===taskId||(panel==='task-workflows'&&redirect?.from===taskId&&redirect.to===task.id&&task.id!==taskId))}
-function workspaceTarget(search,projects){const query=new URLSearchParams(search);const panel=query.get('panel'),projectId=query.get('project_id'),taskId=query.get('task_id');if(!['research','task-workflows'].includes(panel)||!projects.some(p=>p.id===projectId)||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId||''))return null;return{panel,projectId,taskId}}
+function workspaceTarget(search,projects){
+ const query=new URLSearchParams(search),panel=query.get('panel'),projectId=query.get('project_id'),taskId=query.get('task_id');
+ if(!['research','task-workflows'].includes(panel)||!projects.some(p=>p.id===projectId)||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId||''))return null;
+ const target={panel,projectId,taskId};
+ if(query.has('entity_type')||query.has('entity_id')){const type=query.get('entity_type'),id=query.get('entity_id');if(panel!=='research'||!['finding','question','answer','evidence'].includes(type)||typeof id!=='string'||!id.trim()||id.length>200)return null;target.entity={type,id};}
+ return target;
+}
+
 function researchTarget(search,projects){const target=workspaceTarget(search,projects);return target?.panel==='research'?{projectId:target.projectId,taskId:target.taskId}:null}
 
 function transactionPayload(projectId,principalId,revision,requestId,operations){return{project_id:projectId,actor:{principal_id:principalId},expected_revision:revision,request_id:requestId,operations}}
@@ -102,7 +109,7 @@ async function initialize(preferredProject=null){
  recoveringTask=recoveredPanel?.[0]==='task-workflows'&&Boolean(recovered.pendingBody);
  requestedTaskId=recoveringTask?recovered.taskId:target?.taskId||null;
  const desired=(recovered.pendingBody||recovered.claimBody?recovered.projectId:null)||preferredProject||target?.projectId||projectId;
- select.value=navigation.choose(items,desired);await selectProject();
+ select.value=navigation.choose(items,desired);await selectProject();if(target?.entity&&currentPanel==='research'&&projectId===target.projectId&&!dirtyDraft)await researchPanel.open(target.entity.type,target.entity.id);
 }
 async function selectProject(){
  const linkedTask=requestedTaskId,fromRecovery=recoveringTask;requestedTaskId=null;recoveringTask=false;researchTask=null;

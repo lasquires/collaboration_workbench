@@ -112,3 +112,5 @@ assert.match(html,/id="taskWorkspace"/,'selected-task workflows have a real dash
 assert.match(html,/\['task-workflows',taskPanel.state\(\)\]/,'durable task recovery is routed at startup');
 assert.equal(model.matchesTaskTarget({project_id:'p',redirect:{from:taskId,to:'survivor'},context:{task:{id:'survivor',project_id:'p'}}},'p',taskId,'task-workflows'),true,'task navigation may display a validated redirect without silently changing selected identity');
 assert.equal(model.matchesTaskTarget({project_id:'p',redirect:{from:'different',to:'survivor'},context:{task:{id:'survivor',project_id:'p'}}},'p',taskId,'task-workflows'),false);
+assert.deepEqual(plain(model.workspaceTarget('?panel=research&project_id=p&task_id='+taskId+'&entity_type=finding&entity_id=task-finding',[{id:'p'}])),{panel:'research',projectId:'p',taskId,entity:{type:'finding',id:'task-finding'}},'task knowledge links open the exact finding record');
+assert.equal(model.workspaceTarget('?panel=research&project_id=p&task_id='+taskId+'&entity_type=unknown&entity_id=x',[{id:'p'}]),null);

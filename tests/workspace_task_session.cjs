@@ -85,7 +85,7 @@ async function main(){
   }
   {
     const h=harness({api:path=>path.startsWith('/v1/blockers?')?{project_id:project,revision:'store:1',items:[{id:uuid(7),project_id:project,task_id:task}],next_cursor:null}:defaultResponse(path)});
-    await h.session.load();const page=await h.session.readPage('blockers',{task_id:task});assert.equal(page.items.length,1);assert.match(h.calls.at(-1).path,/task_id=.*limit=20/);assert.match(h.calls.at(-1).path,/state=open/);
+    await h.session.load();const page=await h.session.readPage('blockers',{task_id:task});assert.equal(page.items.length,1);const filters=new URL(h.calls.at(-1).path,'http://fixture').searchParams;assert.equal(filters.get('task_id'),task);assert.equal(filters.get('limit'),'20');assert.match(h.calls.at(-1).path,/state=open/);
     await assert.rejects(h.session.readPage('attempts',{task_id:uuid(8)}),/selected task/i);
   }
   {
@@ -116,6 +116,17 @@ async function main(){
     const h=harness();await h.session.load();h.session.edit('record_attempt',op());
     await assert.rejects(h.session.submit(op({expected_record_revision:2})),/guard|revision|captured/i,'submitted task guard must remain the captured draft guard until explicit reconciliation');
     assert.equal(h.calls.filter(c=>c.options.method==='POST').length,0);
+  }
+  {
+    const child=uuid(77),h=harness({api:path=>path.startsWith('/v1/task-children?')?{project_id:project,task_id:task,task_scope_ids:[task],revision:'store:1',items:[{id:child,project_id:project,parent_id:task}],next_cursor:null}:path.includes('/history?')?{project_id:project,revision:'store:1',items:[{event_id:uuid(78),task_id:task,kind:'observation',details:{text:'Pinned history'}}],next_cursor:null}:defaultResponse(path)});
+    await h.session.load();h.session.edit('record_attempt',op());const before=h.session.state().draft;
+    assert.equal((await h.session.readPage('task-children',{task_id:task})).items[0].id,child);
+    assert.doesNotMatch(h.calls.at(-1).path,/order=/,'section API accepts only its explicit task/limit/cursor filters');
+    assert.equal((await h.session.readPage('history',{task_id:task})).items[0].task_id,task);assert.match(h.calls.at(-1).path,new RegExp('/tasks/'+task+'/history'));
+    assert.deepEqual(h.session.state().draft,before,'section navigation cannot change authored fields or base revision');
+  }
+  {
+    const h=harness({api:path=>path.startsWith('/v1/task-findings?')?{project_id:project,task_id:task,task_scope_ids:[task],revision:'store:1',items:[{id:'foreign-scope-finding',project_id:project,scope:{task_id:uuid(88)}}],next_cursor:null}:defaultResponse(path)});await h.session.load();await assert.rejects(h.session.readPage('task-findings'),/scope|task/i);
   }
   console.log('workspace_task_session: protocol fixtures passed');
 }

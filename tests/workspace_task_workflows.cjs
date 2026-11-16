@@ -31,6 +31,13 @@ class Node {
  global.WorkspaceTaskSession={createSession(opts){return{state:()=>JSON.parse(JSON.stringify(state)),edit(kind,seed){state.draft={kind,fields:seed};opts.onChange(state);},change(key,value){state.draft.fields[key]=value;opts.onChange(state);},submit(){posts++;}};}};
  const renderer=tasks.create({mount,document:doc,getContext:()=>({projectId:'p',principalId:'author',taskId:'task-uuid',activePanel:'task-workflows'}),storage:{}});
  const all=n=>[n,...n.children.flatMap(all)];
+ assert.ok(all(mount).some(n=>n.tagName==='button'&&n.textContent==='Subtasks'),'selected task exposes bounded subtask section');
+ assert.ok(all(mount).some(n=>n.tagName==='button'&&n.textContent==='Knowledge'),'selected task exposes scoped finding section');
+ const help=all(mount).find(n=>n['aria-label']==='Filter task actions and help');assert.ok(help);help.value='merge';help.oninput();
+ assert.ok(!all(mount).some(n=>n.tagName==='button'&&n.textContent==='Record an attempt'),'help filter narrows visible actions');
+ assert.equal(state.draft,null);assert.equal(posts,0,'filtering help never creates a draft or mutation');
+ const clear=all(mount).find(n=>n['aria-label']==='Filter task actions and help');clear.value='';clear.oninput();
+
  assert.equal(all(mount).find(n=>n.tagName==='button'&&n.textContent==='Record independent validation').disabled,true,'known missing review capability disables independent validation');
  await all(mount).find(n=>n.tagName==='button'&&n.textContent==='Declare task scope').onclick();
  assert.equal(Object.hasOwn(state.draft.fields,'decomposition_complete'),false,'opening a scope editor cannot silently declare incomplete scope');

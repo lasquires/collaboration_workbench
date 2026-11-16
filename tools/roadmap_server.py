@@ -247,6 +247,10 @@ def workspace_read(parsed,*,ui_actor_id=None):
     if path==['v1','merge-compensations']:
         if set(options)-{'task_id','merge_id','compensation_id','limit','cursor'}:raise RoadmapError(400,'Unsupported compensation audit parameter')
         return _store().read_v1('merge-compensations',project_id,**options)
+    if len(path) == 2 and path[1] in {'task-children', 'task-findings', 'task-questions'}:
+        if 'task_id' not in options or set(options) - {'task_id', 'limit', 'cursor'}:
+            raise RoadmapError(400, 'Task section requires task_id and supports only limit/cursor')
+        return _store().read_v1(path[1], project_id, **options)
     if len(path)==2 and path[1] in {'attempts','validations','blockers','claims'}:
         if set(options)-{'task_id','limit','cursor','order','state'}:
             raise RoadmapError(400,'Unsupported collaboration read parameter')

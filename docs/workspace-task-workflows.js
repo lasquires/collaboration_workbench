@@ -117,7 +117,7 @@ function canAct(kind,state,context){
 function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,document:doc=root.document}={}){
  const host=mount||doc?.querySelector('#taskWorkspace');if(!host)throw Error('Task workflow mount is required.');
  const Session=root.WorkspaceTaskSession||(typeof require==='function'?require('./workspace-task-session.js'):null);
- let session,error='',resource='attempts',invalid=new Map(),readingScopes=false,mergePreview=null,previewPage=0,lastMergeId=null,sectionPages={};
+ let session,error='',resource='attempts',activeSection='overview',helpFilter='',invalid=new Map(),readingScopes=false,mergePreview=null,previewPage=0,lastMergeId=null,sectionPages={};
  const node=(tag,value)=>{const n=doc.createElement(tag);if(value!==undefined)n.textContent=String(value);return n;};
  async function run(fn){try{error='';await fn();}catch(e){error=e.message;notice(error,'error');}render(session.state());}
  function button(label,fn,disabled=false){const b=node('button',label);b.type='button';b.disabled=disabled;b.onclick=()=>run(fn);return b;}
@@ -215,10 +215,40 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   const submit=node('button','Save task action');submit.type='submit';submit.disabled=readingScopes||state.busy||d.needsReconcile||!canAct(d.kind,state,contextOf(state));form.append(submit,button('Discard task draft',()=>session.discard(),state.busy));
   form.onsubmit=e=>{e.preventDefault();if(!form.reportValidity())return;return run(()=>save(draftOperation(session.state())));};parent.append(form);
  }
+ function taskLink(label,state,id,panel='task-workflows',entity=null){
+  const link=node('a',label),query=new URLSearchParams({panel,project_id:state.projectId,task_id:id});
+  if(entity){query.set('entity_type',entity.type);query.set('entity_id',entity.id);}link.href='/?'+query;return link;
+ }
+ function overview(parent,state,context){
+  const task=context.task;parent.append(node('h4','Overview'),node('p',task.summary||context.fields?.summary||'No task summary recorded.'));
+  parent.append(node('p','Workflow status: '+(task.status||'not reported')+' · own acceptance: '+(context.acceptance_state||'unknown')));
+  parent.append(node('p','Declared scope: '+(task.decomposition_complete===undefined?'not reported':task.decomposition_complete?'complete':'incomplete')+' · Area: '+(task.area_id===undefined?'not reported':task.area_id||'unassigned')));
+  const claimScope=state.capabilities?.claim_scope;parent.append(node('p',claimScope==='local-only'?'Task claims coordinate this local copy. Shared-host leases are managed in Live collaboration.':'Task claims coordinate this service. Shared-host leases are managed separately in Live collaboration.'));
+  parent.append(node('h4','Acceptance criteria'));for(const text of Array.isArray(context.acceptance)?context.acceptance:context.acceptance?[context.acceptance]:[])parent.append(node('p',text));
+  parent.append(node('h4','Instructions'));if(!(context.instructions||[]).length)parent.append(node('p','No scoped instructions reported.'));for(const instruction of context.instructions||[]){parent.append(node('p',instruction.body||''));if(instruction.source_path)parent.append(node('small',instruction.source_path));}
+  if(context.ancestors?.length){parent.append(node('h4','Parent scopes'));for(const task of context.ancestors)parent.append(taskLink((task.alias||task.id)+' · '+(task.acceptance_state||'unknown'),state,task.id));}
+  if(context.dependencies?.length){parent.append(node('h4','Prerequisites'));for(const dependency of context.dependencies)parent.append(taskLink(dependency.alias||dependency.id,state,dependency.id));}
+  parent.append(taskLink('Open research for this task',state,state.taskId,'research'));
+  detail(parent,'Current acceptance evidence',context.validation||'No independent validation recorded.');detail(parent,'Full task context and provenance',context);
+ }
+ function sections(parent,state,context){
+  const nav=node('nav');nav.setAttribute('aria-label','Selected task sections');nav.className='actions';
+  for(const [name,title,res] of [['overview','Overview',null],['subtasks','Subtasks','task-children'],['knowledge','Knowledge','task-findings'],['questions','Questions','task-questions'],['discussion','Discussion','history'],['history','History','history']]){
+   const b=button(title,()=>{activeSection=name;if(res){resource=res;return session.readPage(res,{task_id:state.taskId});}},state.busy);b.setAttribute('aria-pressed',String(activeSection===name));nav.append(b);
+  }
+  parent.append(nav);
+  if(activeSection==='overview')overview(parent,state,context);
+  else{parent.append(node('h4',activeSection[0].toUpperCase()+activeSection.slice(1)));if(activeSection==='discussion')parent.append(node('p','The task journal includes authored messages and workflow audit events. Original history and attribution are retained.'));page(parent,state);}
+ }
  function page(parent,state){
   const p=state.pages?.[resource];if(!p)return;
   parent.append(node('p',`${p.items.length} ${resource} in this page. ${p.next_cursor?'More records remain.':'End of collection.'}`));
-  for(const row of p.items){const card=node('article');card.className='card';card.append(node('h4',row.boundary_id||row.kind||row.id));detail(card,'Recorded '+resource.slice(0,-1),row);
+  for(const row of p.items){const card=node('article');card.className='card';card.append(node('h4',row.title||row.claim||row.text||row.boundary_id||row.kind||row.id||row.event_id));
+   if(resource==='task-children'){card.append(node('p',(row.status||'unknown')+' · '+(row.required_for_parent===undefined?'scope relationship not reported':row.required_for_parent?'required by parent':'optional for parent')),taskLink('Open subtask workflow',state,row.id));}
+   if(resource==='task-findings')card.append(node('p','Classification: '+row.classification+' · authored assertion, not forensic acceptance'),taskLink('Open finding',state,state.taskId,'research',{type:'finding',id:row.id}));
+   if(resource==='task-questions')card.append(node('p','Question state: '+row.state),taskLink('Open question',state,state.taskId,'research',{type:'question',id:row.id}));
+   if(resource==='history'){const text=row.details?.text||row.details?.event?.text;if(text)card.append(node('p',text));card.append(node('p',(row.recorded_at||'')+' · '+(row.actor?.label||row.actor?.name||'Recorded contributor')));}
+   detail(card,'Recorded details',row);
    const locked=Boolean(readingScopes||state.draft||state.pendingBody||state.busy);
    if(resource==='attempts'&&row.resolution_state==='unresolved')card.append(button('Resolve this attempt',()=>start('resolve_attempt',{attempt_id:row.id}),locked));
    if(resource==='blockers'&&!row.resolved_at)card.append(button('Resolve this blocker',()=>start('resolve_blocker',{blocker_id:row.id}),locked));
@@ -231,9 +261,9 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   const box=node('div');box.className='task-workflows';box.append(node('h2','Selected task workflow'));const status=node('p',error||state.error||state.phase);status.setAttribute('role','status');box.append(status);
   if(state.selection?.redirect){const redirect=state.selection.redirect;box.append(node('p','This task was merged. Retained drafts and pending requests keep their original target.'));const link=node('a','Open surviving task');link.href='/?panel=task-workflows&project_id='+encodeURIComponent(state.projectId)+'&task_id='+encodeURIComponent(redirect.to);box.append(link);}
   const context=contextOf(state);if(context?.task){box.append(node('h3',context.task.title||context.fields?.title||context.task.id),node('p','Task acceptance: '+(context.acceptance_state||'unknown')+'. Workflow acceptance does not establish forensic behavior.'));
-   detail(box,'Overview and instructions',context);const actions=node('div');actions.className='actions';const locked=Boolean(readingScopes||state.draft||state.pendingBody||state.busy)||!allowed(state,'contribute');
-   for(const [kind,label] of Object.entries(labels))actions.append(button(label,()=>start(kind),locked||!canAct(kind,state,context)));box.append(actions);
-   const nav=node('div');nav.className='actions';for(const name of ['attempts','blockers','validations','claims'])nav.append(button(name,()=>{resource=name;return session.readPage(name,{task_id:state.taskId});},state.busy));box.append(nav);page(box,state);
+   sections(box,state,context);const filter=node('input');filter.type='search';filter.setAttribute('aria-label','Filter task actions and help');filter.placeholder='Find an action or help topic';filter.value=helpFilter;filter.dataset.taskField='help-search';filter.oninput=()=>{helpFilter=filter.value;render(session.state());};box.append(filter,node('p','Actions preserve history. Validation requires an independent reviewer; completion checks this task and its required children. No workflow status proves native behavior.'));const actions=node('div');actions.className='actions';const locked=Boolean(readingScopes||state.draft||state.pendingBody||state.busy)||!allowed(state,'contribute');
+   for(const [kind,label] of Object.entries(labels).filter(([kind,label])=>(kind+' '+label).toLowerCase().includes(helpFilter.toLowerCase())))actions.append(button(label,()=>start(kind),locked||!canAct(kind,state,context)));box.append(actions);
+   const nav=node('div');nav.className='actions';for(const name of ['attempts','blockers','validations','claims'])nav.append(button(name,()=>{activeSection='records';resource=name;return session.readPage(name,{task_id:state.taskId});},state.busy));box.append(nav);
   }
   editor(box,state);host.replaceChildren(box);
   if(key){const input=Array.from(host.querySelectorAll('[data-task-field]')).find(n=>n.dataset.taskField===key);if(input){input.value=caret.value;input.focus();if(typeof input.setSelectionRange==='function'&&caret.start!==null)input.setSelectionRange(caret.start,caret.end);}}

@@ -3,10 +3,8 @@
   const RECOVERY = 'workbench.task.pending.v1';
   const MAX_BYTES = 2 * 1024 * 1024;
   const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  const RESOURCES = new Set(['attempts',
-  'validations',
-  'blockers',
-  'claims']);
+  const SECTIONS = new Set(['task-children', 'task-findings', 'task-questions']);
+  const RESOURCES = new Set(['attempts', 'validations', 'blockers', 'claims', 'history', ...SECTIONS]);
   const SCHEMAS = {
     set_task_scope: ['area_id',
     'decomposition_complete'],
@@ -373,66 +371,68 @@
         }
       }
     }
-    async function readPage(resource,
-    params={
-    }
-    ,
-    cursor=null){
+    async function readPage(resource, params={}, cursor=null) {
       busyGuard();
       const c=scoped();
-      if(!RESOURCES.has(resource))throw Error('Unsupported task collection.');
-      if(params===null)params={
+      if (!RESOURCES.has(resource)) throw Error('Unsupported task collection.');
+      if (params===null) params={};
+      if (!isObject(params)||Object.keys(params).some(key=>key!=='task_id')||
+          (params.task_id!==undefined&&params.task_id!==c.taskId)) {
+        throw Error('Task collection filter must match the selected task.');
       }
-      ;
-      if(!isObject(params)||Object.keys(params).some(key=>key!=='task_id')||(params.task_id!==undefined&&params.task_id!==c.taskId))throw Error('Task collection filter must match the selected task.');
-      if(projectId!==c.projectId||principalId!==c.principalId||taskId!==c.taskId||!selection?.context)throw Error('Load the selected task before reading its collections.');
-      if(cursor!==null&&(typeof cursor!=='string'||!cursor||cursor.length>100000))throw Error('Invalid task collection cursor.');
-      const ticket=++sequence,
-      rev=revision;
-      const query=new URLSearchParams({
-        project_id:c.projectId,
-        task_id:c.taskId,
-        limit:'20',
-        order:'desc'}
-      );
-      if(resource==='blockers')query.set('state',
-      'open');
-      if(cursor)query.set('cursor',
-      cursor);
-      busy=true;
-      emit();
-      try{
-        const result=envelope(await call(`/v1/${resource}?${query}`),
-        c);
-        if(!isCurrent(ticket,
-        c))return null;
-        if(result.revision!==rev||!Array.isArray(result.items)||result.items.length>20||!(result.next_cursor===null||typeof result.next_cursor==='string'))throw Error('Task collection did not match its snapshot or page bound.');
-        for(const item of result.items){
-          if(!isObject(item)||item.project_id!==c.projectId||!TASK_ID.test(item.task_id||''))throw Error('Task collection returned a row outside the selected project.');
+      if (projectId!==c.projectId||principalId!==c.principalId||taskId!==c.taskId||!selection?.context) {
+        throw Error('Load the selected task before reading its collections.');
+      }
+      if (cursor!==null&&(typeof cursor!=='string'||!cursor||cursor.length>100000)) throw Error('Invalid task collection cursor.');
+      const ticket=++sequence, capturedRevision=revision;
+      const query=new URLSearchParams({project_id:c.projectId,limit:'20'});
+      let route='/v1/'+resource;
+      if (resource==='history') route='/v1/tasks/'+encodeURIComponent(c.taskId)+'/history';
+      else {
+        query.set('task_id',c.taskId);
+        if (!SECTIONS.has(resource)) query.set('order','desc');
+      }
+      if (resource==='blockers') query.set('state','open');
+      if (cursor) query.set('cursor',cursor);
+      busy=true;emit();
+      try {
+        const result=envelope(await call(route+'?'+query),c);
+        if (!isCurrent(ticket,c)) return null;
+        if (result.revision!==capturedRevision||!Array.isArray(result.items)||result.items.length>20||
+            !(result.next_cursor===null||typeof result.next_cursor==='string'&&result.next_cursor.length>0)) {
+          throw Error('Task collection did not match its snapshot or page bound.');
         }
-        pages[resource]={
-          resource,
-          taskId:c.taskId,
-          revision:result.revision,
-          cursor,
-          items:clone(result.items),
-          next_cursor:result.next_cursor}
-        ;
+        let scopes=[c.taskId];
+        if (SECTIONS.has(resource)) {
+          if (result.task_id!==c.taskId||!Array.isArray(result.task_scope_ids)||
+              !result.task_scope_ids.includes(c.taskId)||result.task_scope_ids.some(id=>!TASK_ID.test(id))) {
+            throw Error('Task section did not match its selected scope.');
+          }
+          scopes=result.task_scope_ids;
+        }
+        for (const item of result.items) {
+          if (!isObject(item)) throw Error('Task collection returned an invalid row.');
+          if (resource==='history') {
+            if (item.task_id!==c.taskId||(item.project_id!==undefined&&item.project_id!==c.projectId)) throw Error('History row belongs to another task scope.');
+          } else {
+            if (item.project_id!==c.projectId) throw Error('Task collection returned a row outside the selected project.');
+            if (resource==='task-children') {
+              if (!TASK_ID.test(item.id||'')||item.parent_id!==c.taskId) throw Error('Child row belongs to another parent scope.');
+            } else if (resource==='task-findings') {
+              if (!validId(item.id)||!scopes.includes(item.scope?.task_id)) throw Error('Finding row belongs to another task scope.');
+            } else if (resource==='task-questions') {
+              if (!validId(item.id)||!scopes.includes(item.owner_task_id)) throw Error('Question row belongs to another task scope.');
+            } else if (!TASK_ID.test(item.task_id||'')) throw Error('Task collection returned an invalid task identity.');
+          }
+        }
+        pages[resource]={resource,taskId:c.taskId,revision:result.revision,cursor,items:clone(result.items),
+          next_cursor:result.next_cursor,task_scope_ids:clone(scopes),coverage:clone(result.coverage)};
         return clone(pages[resource]);
-      }
-      catch(e){
-        if(isCurrent(ticket,
-        c)){
-          phase=e.status===409?'stale':'read-error';
-          error=e.message;
-        }
-        throw e;
-      }
-      finally{
-        if(ticket===sequence){
-          busy=false;
-          emit();
-        }
+      } catch (failure) {
+        if (isCurrent(ticket,c)) { phase=failure.status===409?'stale':'read-error';error=failure.message; }
+        throw failure;
+      } finally {
+        if (ticket===sequence) { busy=false;emit(); }
       }
     }
     function edit(kind,

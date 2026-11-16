@@ -46,3 +46,25 @@ Read exact merge/reversal/compensation previews with bounded visible sections an
 - [ ] Independent review and parent-specific acceptance before scoped publication. Source migration/cutover remains a separate backed-up gate.
 
 Contract evidence: roadmap_structure.apply_operation/guard/parent_guards/read, roadmap_projection context, workspace_merge_compensation and roadmap_server workspace_read/shared_write. Read-only taskC01-TASK-UI-CONTRACT records exact handler/test audit. Native parity is outside this workflow gate.
+
+## Scoped sections integration checkpoint
+
+Implemented exact task-children/task-findings/task-questions projections with
+20 default/100 maximum pages and resource/project/task/limit/revision-bound
+cursors. Archived children remain visible; finding/question rows use current
+projections and active merge lineage without rewriting original attribution.
+Authenticated routes reject missing stable task IDs and unsupported filters.
+History uses the existing exact-task history route. The overview explains
+acceptance, scope and claim coordination; local action filtering does not author
+or submit changes. Research entity query links preserve exact project/task scope.
+
+Verification: all 13 Node suites and 63 focused Python tests passed (task section,
+HTTP, task context, research context, structure and finding suites). Independent
+frontend and backend/HTTP reviews found no confirmed defects. A disposable
+authenticated browser fixture verified each section, retained an unfinished attempt
+across navigation and help filtering, discarded it explicitly, and opened the
+exact selected finding. At a 390px viewport, document/body scroll width was375px
+and draft fields306px. Viewport reset and fixture server stopped. Synthetic
+fixtures establish workflow behavior only. Broader parent acceptance and source
+migration/cutover remain open; the unchecked checklist above is the full-parent
+acceptance list, not an assertion that delivered slices are absent.
