@@ -68,3 +68,14 @@ and draft fields306px. Viewport reset and fixture server stopped. Synthetic
 fixtures establish workflow behavior only. Broader parent acceptance and source
 migration/cutover remain open; the unchecked checklist above is the full-parent
 acceptance list, not an assertion that delivered slices are absent.
+
+
+Final navigation review found and reproduced an unsent-draft loss through ordinary
+task/research anchors. Added an actual DOM regression before the fix. Task links,
+including merge redirects, now inspect current draft/pending/busy state at click
+time; dashboard ordinary links and page unload also guard dirty work. The fix
+preserves authored fields and permits clean navigation after explicit discard.
+All13 Node suites passed. Independent re-review found no remaining bypass; actual
+authenticated browser confirmed research and map links stayed on the task with
+its authored boundary intact, and navigation worked after local discard. The
+fixture server was stopped. No parent acceptance inferred from this bounded fix.

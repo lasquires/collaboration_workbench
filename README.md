@@ -56,9 +56,9 @@ validation and separate completion, guarded scope/move/archive/reopen actions,
 and explicit task-claim renewal/release. Merge, reversal and compensation forms
 require fresh previews and explicit conflict choices; later edits are preserved
 through reviewed compensation. Exact pending task requests survive reload.
-Authenticated browser flows cover these core actions. Lost-response/reload,
-additional stale-context/mobile checks and final integration gates remain under
-verification; see the [task workflow plan](docs/superpowers/plans/2026-11-15-task-workflows.md).
+Authenticated browser flows cover these core actions, exact lost-response retries,
+reload recovery, stale-context reconciliation and narrow-screen task browsing.
+Unsaved drafts guard links and page unload. Final integration gates remain open; see the [task workflow plan](docs/superpowers/plans/2026-11-15-task-workflows.md).
 
 Repository refresh pins committed source bytes and publishes bounded Unicode
 identifier-shaped indexes with explicit coverage. Dirty working copies remain

@@ -217,7 +217,9 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
  }
  function taskLink(label,state,id,panel='task-workflows',entity=null){
   const link=node('a',label),query=new URLSearchParams({panel,project_id:state.projectId,task_id:id});
-  if(entity){query.set('entity_type',entity.type);query.set('entity_id',entity.id);}link.href='/?'+query;return link;
+  if(entity){query.set('entity_type',entity.type);query.set('entity_id',entity.id);}link.href='/?'+query;
+  link.onclick=event=>{const current=session.state();if(current.draft||current.pendingBody||current.busy){event.preventDefault();error='Save or discard the current task draft before following a link. Retry an uncertain request before leaving.';notice(error,'error');render(current);}};
+  return link;
  }
  function overview(parent,state,context){
   const task=context.task;parent.append(node('h4','Overview'),node('p',task.summary||context.fields?.summary||'No task summary recorded.'));
@@ -259,7 +261,7 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
  function render(state){
   if(!state.draft)invalid.clear();const active=doc.activeElement,key=active?.dataset?.taskField,caret=key?{value:active.value,start:active.selectionStart,end:active.selectionEnd}:null;
   const box=node('div');box.className='task-workflows';box.append(node('h2','Selected task workflow'));const status=node('p',error||state.error||state.phase);status.setAttribute('role','status');box.append(status);
-  if(state.selection?.redirect){const redirect=state.selection.redirect;box.append(node('p','This task was merged. Retained drafts and pending requests keep their original target.'));const link=node('a','Open surviving task');link.href='/?panel=task-workflows&project_id='+encodeURIComponent(state.projectId)+'&task_id='+encodeURIComponent(redirect.to);box.append(link);}
+  if(state.selection?.redirect){const redirect=state.selection.redirect;box.append(node('p','This task was merged. Retained drafts and pending requests keep their original target.'));box.append(taskLink('Open surviving task',state,redirect.to));}
   const context=contextOf(state);if(context?.task){box.append(node('h3',context.task.title||context.fields?.title||context.task.id),node('p','Task acceptance: '+(context.acceptance_state||'unknown')+'. Workflow acceptance does not establish forensic behavior.'));
    sections(box,state,context);const filter=node('input');filter.type='search';filter.setAttribute('aria-label','Filter task actions and help');filter.placeholder='Find an action or help topic';filter.value=helpFilter;filter.dataset.taskField='help-search';filter.oninput=()=>{helpFilter=filter.value;render(session.state());};box.append(filter,node('p','Actions preserve history. Validation requires an independent reviewer; completion checks this task and its required children. No workflow status proves native behavior.'));const actions=node('div');actions.className='actions';const locked=Boolean(readingScopes||state.draft||state.pendingBody||state.busy)||!allowed(state,'contribute');
    for(const [kind,label] of Object.entries(labels).filter(([kind,label])=>(kind+' '+label).toLowerCase().includes(helpFilter.toLowerCase())))actions.append(button(label,()=>start(kind),locked||!canAct(kind,state,context)));box.append(actions);

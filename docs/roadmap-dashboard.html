@@ -78,6 +78,9 @@ const model={matchesTaskTarget,workspaceTarget,researchTarget,reconcileQuestionR
 
 const $=s=>document.querySelector(s),esc=s=>String(s??'');let projectId=null,principalId=null,revision=null,hostOwner=false,currentPanel='repositories',selectedDocument=null,selectedVersions=[],states={},pendingConflict=null,pendingRetry=null,dirtyDraft=false;
 
+// Drafts stay in this tab until explicitly saved or discarded.
+root.addEventListener('beforeunload',event=>{if(dirtyDraft){event.preventDefault();event.returnValue='';}});
+document.addEventListener('click',event=>{if(dirtyDraft&&event.target.closest?.('a[href]')){event.preventDefault();notice('Save or discard the current panel draft before following a link.','error');}},true);
 let researchTask=null,requestedTaskId=null,recoveringTask=false;
 const navigation=WorkspaceNavigation.browser();
 const resources=['observations','findings','questions','hints','inbox','documents','subscriptions'];

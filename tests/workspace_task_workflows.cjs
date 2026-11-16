@@ -42,6 +42,17 @@ class Node {
  await all(mount).find(n=>n.tagName==='button'&&n.textContent==='Declare task scope').onclick();
  assert.equal(Object.hasOwn(state.draft.fields,'decomposition_complete'),false,'opening a scope editor cannot silently declare incomplete scope');
  assert.equal(Object.hasOwn(state.draft.fields,'area_id'),false,'missing context area cannot silently clear existing scope');
+ const retained=JSON.stringify(state.draft);let prevented=false;
+ const researchLink=all(mount).find(n=>n.tagName==='a'&&n.textContent==='Open research for this task');
+ assert.equal(typeof researchLink.onclick,'function','task context links guard unsaved navigation');
+ researchLink.onclick({preventDefault(){prevented=true;}});
+ assert.equal(prevented,true,'unsent task draft blocks full-page research navigation');
+ assert.equal(JSON.stringify(state.draft),retained,'blocked link retains authored task fields');
+ state.draft=null;state.pendingBody=JSON.stringify({operations:[{op:'record_attempt',task_id:'task-uuid'}]});prevented=false;
+ researchLink.onclick({preventDefault(){prevented=true;}});
+ assert.equal(prevented,true,'pending request also blocks navigation');
+ state.pendingBody=null;prevented=false;researchLink.onclick({preventDefault(){prevented=true;}});
+ assert.equal(prevented,false,'clean task links retain normal navigation');
  assert.equal(posts,0,'opening task forms never submits');
  delete global.WorkspaceTaskSession;console.log('task workflow DOM checks passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
