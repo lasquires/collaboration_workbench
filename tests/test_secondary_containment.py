@@ -73,6 +73,16 @@ class SecondaryContainmentTests(unittest.TestCase):
             self.write({'op':'add_containment','task_id':tasks['secondary']['id'],'parent_id':tasks['child']['id']})
         self.assertEqual(self.store.snapshot()['revision'],before)
 
+    def test_primary_parent_move_cannot_create_cycle_through_secondary_edge(self):
+        tasks=self.create()
+        self.write({'op':'add_containment','task_id':tasks['child']['id'],'parent_id':tasks['secondary']['id']})
+        before=self.store.snapshot()['revision']
+        with self.assertRaisesRegex(StoreError,'Cyclic containment graph'):
+            self.write({'op':'set_parent','task_id':tasks['secondary']['id'],'parent_id':tasks['child']['id']})
+        self.assertEqual(self.store.snapshot()['revision'],before)
+        parent=self.store.read_v1('context',self.project,key=tasks['secondary']['id'])['context']['task']
+        self.assertIsNone(parent['parent_id'])
+
     def test_secondary_links_are_project_scoped(self):
         tasks=self.create()
         other=RoadmapStore(Path(self.tmp.name)/'other.sqlite3',bootstrap_slug='other')

@@ -808,7 +808,11 @@ class RoadmapStore:
                             raise StoreError(409,'Task was merged; use its survivor or reverse the merge')
                 self._validate(tasks, links)
                 self._gates(before, tasks, links, task_operations, validated_tasks=validated_tasks)
-                self._write_state(db, tasks, links, project_id=_workspace["payload"]["project_id"] if _workspace else None)
+                try:
+                    self._write_state(db, tasks, links, project_id=_workspace["payload"]["project_id"] if _workspace else None)
+                except sqlite3.IntegrityError as exc:
+                    if 'cycle' in str(exc).lower(): raise StoreError(400,'Cyclic containment graph') from exc
+                    raise
                 if _workspace:
                     project = _workspace["payload"]["project_id"]
                     for alias, legacy in _workspace["aliases"].items():
