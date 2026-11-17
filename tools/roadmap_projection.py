@@ -161,7 +161,7 @@ def _task(row, rows, progress, containment=None):
     parent = next((r['uid'] for r in rows.values() if r['id']==row['parent_id']),None)
     return {'id':row['uid'],'alias':row['alias'],'legacy_id':row['id'],'project_id':row['project_id'],
             'parent_id':parent,'contains':[{'parent_id':edge['parent_id'],'required_for_parent':bool(edge['required_for_parent'])} for edge in (containment or []) if edge['child_id']==row['uid']],
-            'title':record['title'],'status':record['status'],
+            'title':record['title'],'status':record['status'],**({'stage':record['stage']} if record.get('stage') else {}),
             'summary':record.get('summary',''),'owner':record.get('owner'),
             'record_revision':row['revision'],'structure_revision':row['structure_revision'],
             'archived_at':row['archived_at'],'archive_reason':row['archive_reason'],
