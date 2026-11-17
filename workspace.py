@@ -287,6 +287,8 @@ def main(argv=None):
     serve.add_argument('--public-host')
     serve.add_argument('--shared-mode',action='store_true')
     serve.add_argument('--tls-cert',type=Path);serve.add_argument('--tls-key',type=Path)
+    serve.add_argument('--remote-port',type=int);serve.add_argument('--remote-public-host')
+    serve.add_argument('--remote-tls-cert',type=Path);serve.add_argument('--remote-tls-key',type=Path)
     host_init=commands.add_parser('host-init',help='create a private owner credential while the service is stopped')
     host_init.add_argument('--home',type=Path,default=default_home())
     member=commands.add_parser('host-add-member',help='create a project-scoped collaborator credential while the host is stopped')
@@ -314,6 +316,9 @@ def main(argv=None):
             if args.public_host:options.extend(['--public-host',args.public_host])
             if args.tls_cert:options.extend(['--tls-cert',str(args.tls_cert)])
             if args.tls_key:options.extend(['--tls-key',str(args.tls_key)])
+            for flag in ('remote_port','remote_public_host','remote_tls_cert','remote_tls_key'):
+                value=getattr(args,flag)
+                if value is not None:options.extend(['--'+flag.replace('_','-'),str(value)])
             return roadmap_server.main(options)
         result=setup_project(args.repo,args.url,apply=args.apply,name=args.name) if args.command=='setup' else diagnose(args.repo,args.url)
         print(json.dumps(result,ensure_ascii=False,indent=2))

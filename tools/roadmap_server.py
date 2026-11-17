@@ -840,7 +840,17 @@ def main(argv=None):
     parser.add_argument('--public-host',help='explicit trusted HTTP Host header, hostname with optional port')
     parser.add_argument('--tls-cert', type=Path)
     parser.add_argument('--tls-key', type=Path)
+    parser.add_argument('--remote-port', type=int)
+    parser.add_argument('--remote-public-host')
+    parser.add_argument('--remote-tls-cert', type=Path)
+    parser.add_argument('--remote-tls-key', type=Path)
     args = parser.parse_args(argv)
+    remote_options = (args.remote_port, args.remote_public_host, args.remote_tls_cert, args.remote_tls_key)
+    paired = any(value is not None for value in remote_options)
+    if paired and (args.shared_mode or not all(value is not None for value in remote_options)):
+        parser.error('Paired hosting requires all --remote-* options and a local primary listener')
+    if paired and (not 1 <= args.remote_port <= 65535 or args.remote_port == args.port):
+        parser.error('Remote port must be distinct and between 1 and 65535')
     selected_store = args.store.resolve()
     if not selected_store.is_file():
         raise SystemExit(f"Authoritative task database is missing: {selected_store}")
@@ -853,22 +863,41 @@ def main(argv=None):
             _store(selected_store).snapshot()
             tls = startup_security(args.host, args.shared_mode, args.tls_cert, args.tls_key, selected_store)
             accepted_service_hosts(args.host,args.port,args.public_host)
-            server = ThreadingHTTPServer((args.host, args.port), Handler)
-            server.shared_mode = args.shared_mode
-            server.accepted_hosts = accepted_service_hosts(args.host,server.server_port,args.public_host)
-            if tls is not None:
-                server.socket = tls.wrap_socket(server.socket, server_side=True)
-            stop, worker = start_matcher_worker(selected_store)
-            repository_stop, repository_worker = start_repository_worker(selected_store)
-            sync_stop,sync_worker=start_git_sync_worker(selected_store)
-            scheme = 'https' if tls is not None else 'http'
-            print(f"Research Workspace at {scheme}://{args.host}:{server.server_port}/ (store: {selected_store})")
-            try: server.serve_forever()
-            except KeyboardInterrupt: pass
+            remote_tls = None
+            if paired:
+                remote_tls = startup_security('127.0.0.1', True, args.remote_tls_cert, args.remote_tls_key, selected_store)
+                accepted_service_hosts('127.0.0.1', args.remote_port, args.remote_public_host)
+            servers = []; workers = []; remote_thread = None
+            def listener(host, port, shared, public_host, context):
+                result = ThreadingHTTPServer((host, port), Handler)
+                servers.append(result)
+                result.shared_mode = shared
+                result.accepted_hosts = accepted_service_hosts(host, result.server_port, public_host)
+                if context is not None:
+                    result.socket = context.wrap_socket(result.socket, server_side=True)
+                return result
+            try:
+                server = listener(args.host, args.port, args.shared_mode, args.public_host, tls)
+                if paired:
+                    remote = listener('127.0.0.1', args.remote_port, True, args.remote_public_host, remote_tls)
+                    remote_thread = threading.Thread(target=remote.serve_forever, name='shared-https', daemon=True)
+                    remote_thread.start()
+                    print(f'Shared Workbench at https://{args.remote_public_host}/', flush=True)
+                for start_worker in (start_matcher_worker, start_repository_worker, start_git_sync_worker):
+                    workers.append(start_worker(selected_store))
+                scheme = 'https' if tls is not None else 'http'
+                print(f"Research Workspace at {scheme}://{args.host}:{server.server_port}/ (store: {selected_store})", flush=True)
+                try: server.serve_forever()
+                except KeyboardInterrupt: pass
             finally:
-                stop.set();repository_stop.set();sync_stop.set()
-                worker.join(timeout=6);repository_worker.join(timeout=6);sync_worker.join(timeout=6)
-                server.server_close()
+                if remote_thread is not None:
+                    remote.shutdown(); remote_thread.join(timeout=6)
+                for stop, worker in workers: stop.set()
+                for stop, worker in workers: worker.join(timeout=6)
+                for instance in reversed(servers):
+                    if hasattr(instance, 'workspace_runtime'):
+                        instance.workspace_runtime.close()
+                    instance.server_close()
     except RoadmapError as exc:
         raise SystemExit(str(exc)) from exc
 

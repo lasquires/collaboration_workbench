@@ -47,6 +47,35 @@ it without a mandatory paid service.
 
 Open the service's HTTPS address. The browser offers a session-only credential
 sign-in and an explicit reload. Sign-out clears the tab's stored credential.
+
+### Keep local Run & test available while hosting
+
+One service can retain its private loopback HTTP listener and expose a second,
+authenticated TLS listener for a separately configured HTTPS relay:
+
+```text
+python workspace.py serve --port 8771 --remote-port 8772 --remote-public-host workbench.example --remote-tls-cert <origin-certificate.pem> --remote-tls-key <origin-key.pem>
+```
+
+All four `--remote-*` options are required together. Do not combine them with
+`--shared-mode`. The primary listener must stay on loopback; the second listener
+also binds only to `127.0.0.1`. Both use one database authority, service lock and
+set of background workers. The second listener enforces shared-mode credentials,
+project scopes and the configured Host header. It cannot run local commands or
+serve repository files. The primary listener keeps the existing local workflow.
+
+Prepare owner and collaborator credentials with the offline commands above.
+Configure the relay to target **the second HTTPS listener**, verify its origin
+certificate, and preserve the configured public Host header. Never relay the
+unauthenticated primary listener. Choose and authorize the relay provider before
+sending private project traffic through it. These listener options do not install
+a relay, provision a public hostname or guarantee remote connectivity.
+
+Verification must cover the actual public address: unauthenticated API reads
+fail, a collaborator can read and write its permitted project, other projects
+remain inaccessible, and local commands remain unavailable remotely. Local-only
+tests do not establish that a different computer can connect.
+
 For agents, use a private token file rather than putting a token in a command:
 
 ```text
