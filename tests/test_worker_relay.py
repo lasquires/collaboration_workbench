@@ -42,6 +42,9 @@ class WorkerRelay(unittest.TestCase):
             write(dict(op="create",alias="motion",record={"title":"Motion","status":"ready","acceptance":["Compare stationary endpoints"]}))
             task=context("motion")["task"]["id"]
             first=worker("claim",task,"first")
+            self.assertEqual(first["claim"]["by"], "first")
+            self.assertEqual(first["status"], "ready")
+            self.assertEqual(first["reserved_paths"], [])
             self.assertIn("recorded build",first["rules"][0]["body"])
             follow={"alias":"contact-motion","title":"Natural contact","next_step":"Capture the first natural contact frame","acceptance":"Compare velocity on the first contact frame"}
             (repo/"follow.json").write_text(json.dumps(follow))

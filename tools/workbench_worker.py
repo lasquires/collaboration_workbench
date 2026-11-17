@@ -21,6 +21,8 @@ def brief(repo, ctx):
     history = [e.get("details", {}).get("text") for e in ctx.get("history", [])]
     last_handoff=next((text for text in history if text and text.startswith(("Pending worker handoff ","Verified handoff "))),None)
     return {"handoff":last_handoff,"review_leads":ctx.get("variable_leads",[]),"task": task["id"], "title": task["title"], "status": task["status"],
+            "claim": fields.get("claim"), "claim_state": task.get("progress", {}).get("claim"),
+            "reserved_paths": ctx.get("reservations", []),
             "work_type": "historical report" if task["alias"].startswith("report-") else
                          "bounded comparison" if ctx.get("acceptance") else "needs a pass condition",
             "open_question": fields.get("discovery_wait") or fields.get("summary"),
