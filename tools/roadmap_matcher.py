@@ -420,6 +420,70 @@ def _process_pair(db, project: str, question: sqlite3.Row, candidate_row: sqlite
         raise ValueError(f"question {question['id']}: {exc}") from exc
 
 
+def _question_candidates(db, project: str, identifiers: list[str], offset: int,
+                         limit: int) -> tuple[list[tuple[int, Any]], int]:
+    """Identifier-prefiltered page retaining the original global ordinal space.
+
+    Rank published observations once, rather than running a correlated OFFSET
+    lookup for each observation. Findings keep their existing evidence gate.
+    Scope/build/type matching still belongs to _process_pair, never this filter.
+    """
+    observations = _observation_count(db, project)
+    total = observations + _finding_count(db, project)
+    marks = ','.join('?' for _ in identifiers)
+    candidates = []
+    if offset < observations:
+        rows = db.execute(f"""
+            WITH published AS (
+                SELECT ro.observation_id,MIN(r.id) AS source_run_id
+                FROM run_observations ro JOIN index_runs r
+                  ON r.project_id=ro.project_id AND r.id=ro.run_id
+                WHERE ro.project_id=? AND r.state='published'
+                GROUP BY ro.observation_id
+            ), ranked AS (
+                SELECT o.*,p.source_run_id,
+                       ROW_NUMBER() OVER (ORDER BY o.id)-1 AS candidate_ordinal
+                FROM observations o JOIN published p ON p.observation_id=o.id
+                WHERE o.project_id=?
+            )
+            SELECT o.*,c.artifact_version_id,c.namespace,c.scope_key,c.locator_key,
+                   v.binary_build_id,v.sha256 AS source_sha256
+            FROM ranked o
+            JOIN occurrences c ON c.project_id=o.project_id AND c.id=o.occurrence_id
+            JOIN artifact_versions v ON v.project_id=c.project_id AND v.id=c.artifact_version_id
+            WHERE o.candidate_ordinal>=? AND o.identifier IN ({marks})
+            ORDER BY o.candidate_ordinal LIMIT ?""",
+            (project, project, offset, *identifiers, limit)).fetchall()
+        candidates.extend((row['candidate_ordinal'], row) for row in rows)
+    if len(candidates) < limit:
+        # Same current/available-source eligibility and ordering as _finding_at.
+        rows = db.execute(f"""
+            WITH ranked AS (
+                SELECT r.id,json_extract(r.scope_json,'$.identifier') AS identifier,
+                       ROW_NUMBER() OVER (ORDER BY r.id)-1 AS candidate_ordinal
+                FROM finding_revisions r
+                WHERE r.project_id=?
+                  AND EXISTS(SELECT 1 FROM findings f WHERE f.project_id=r.project_id
+                    AND f.archived_at IS NULL AND f.current_revision_id=r.id)
+                  AND ({_FINDING_SCOPE_SQL})
+                  AND EXISTS(SELECT 1 FROM evidence_links e
+                    WHERE e.project_id=r.project_id AND e.subject_type='finding_revision'
+                      AND e.subject_id=COALESCE((SELECT evidence_origin_id
+                        FROM finding_revision_lineage l WHERE l.project_id=r.project_id
+                          AND l.revision_id=r.id),r.id)
+                      AND e.state='available'
+                      AND e.artifact_version_id=json_extract(r.scope_json,'$.artifact_version_id'))
+            )
+            SELECT candidate_ordinal FROM ranked
+            WHERE candidate_ordinal>=? AND identifier IN ({marks})
+            ORDER BY candidate_ordinal LIMIT ?""",
+            (project, max(0, offset-observations), *identifiers, limit-len(candidates))).fetchall()
+        for row in rows:
+            ordinal = row['candidate_ordinal']
+            candidates.append((observations+ordinal, _finding_at(db, project, ordinal)))
+    return candidates, total
+
+
 def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) -> tuple[int, int, bool]:
     page_cache: dict = {}
     payload = json.loads(event["payload_json"])
@@ -488,35 +552,27 @@ def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) ->
         db.execute("UPDATE research_outbox SET fanout_offset=?,state=?,attempt_count=attempt_count+1,last_error=NULL WHERE id=?",
                    (offset, "done" if done else "pending", event["id"]))
         return processed, matches, done
-    # A scoped watch on a large existing index usually names very few observations.
-    # Finish such a watch in one page. For larger sets keep the original durable
-    # cursor ordering, including any pages started by an earlier service version.
-    # A partially processed legacy page may restart from the sparse candidates.
-    # Match identity deduplication preserves existing hints and notifications.
     if question_id and qcount:
         question = _question_at(db, project, 0, question_id=question_id, cache=page_cache)
-        groups = json.loads(question["criteria_json"])["any_of"]
-        identifiers = sorted({group["identifier"] for group in groups})
-        marks = ",".join("?" for _ in identifiers)
-        rows = db.execute(f"""
-            SELECT o.*, c.artifact_version_id,c.namespace,c.scope_key,c.locator_key,
-                   v.binary_build_id,v.sha256 AS source_sha256,
-                   (SELECT MIN(r.id) FROM index_runs r JOIN run_observations ro
-                    ON ro.project_id=r.project_id AND ro.run_id=r.id
-                    WHERE r.project_id=o.project_id AND r.state='published'
-                      AND ro.observation_id=o.id) AS source_run_id
-            FROM observations o JOIN occurrences c ON c.project_id=o.project_id AND c.id=o.occurrence_id
-            JOIN artifact_versions v ON v.project_id=c.project_id AND v.id=c.artifact_version_id
-            WHERE o.project_id=? AND o.identifier IN ({marks})
-            LIMIT ?""", (project, *identifiers, remaining + 1)).fetchall()
-        findings = _finding_count(db, project)
-        if len(rows) + findings <= remaining:
-            candidates = [_candidate(row) for row in rows if row["source_run_id"] is not None]
-            candidates.extend(_finding_at(db, project, i) for i in range(findings))
-            matches = sum(_process_pair(db, project, question, item, DEFAULT_RULE_VERSION)
-                          for item in candidates if item is not None)
-            db.execute("UPDATE research_outbox SET state='done',attempt_count=attempt_count+1,last_error=NULL WHERE id=?", (event["id"],))
-            return len(candidates), matches, True
+        identifiers = sorted({group['identifier'] for group in json.loads(question['criteria_json'])['any_of']})
+        # One extra matching identifier tells us whether another page is needed.
+        # Persist the legacy observation-then-finding ordinal, including jobs
+        # begun before sparse question paging. No full-index per-row fallback.
+        candidates, total = _question_candidates(db, project, identifiers, 0, remaining+1)
+        # Historical small sparse watches restarted from the matching set and
+        # relied on hint identity deduplication. Retain that recovery contract.
+        # Larger sets must resume their durable full-index ordinal instead.
+        if len(candidates) > remaining and event['fanout_offset']:
+            candidates, total = _question_candidates(db, project, identifiers,
+                                                      event['fanout_offset'], remaining+1)
+        page = candidates[:remaining]
+        matches = sum(_process_pair(db, project, question, candidate, DEFAULT_RULE_VERSION)
+                      for _, candidate in page if candidate is not None)
+        done = len(candidates) <= remaining
+        offset = total if done else page[-1][0]+1
+        db.execute("UPDATE research_outbox SET fanout_offset=?,state=?,attempt_count=attempt_count+1,last_error=NULL WHERE id=?",
+                   (offset, 'done' if done else 'pending', event['id']))
+        return len(page), matches, done
     ccount = _candidate_count(db, project, run_id=run_id,
                               finding_revision_id=finding_revision_id, cache=page_cache)
     total = qcount * ccount
