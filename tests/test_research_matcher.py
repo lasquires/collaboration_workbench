@@ -12,6 +12,23 @@ from tools.roadmap_schema import principal_for_label
 
 
 class MatcherTests(unittest.TestCase):
+    def test_large_historical_job_does_not_starve_new_notifications(self):
+        version = self.source()
+        self.question()
+        self.publish(version, member='a')
+        self.publish(version, member='b')
+        with self.store._connection() as db:
+            oldest = db.execute("SELECT id FROM research_outbox WHERE state='pending' ORDER BY event_sequence LIMIT 1").fetchone()[0]
+            db.execute("UPDATE research_outbox SET attempt_count=990 WHERE id=?", (oldest,))
+            db.commit()
+        self.process(limit=1)
+        with self.store._connection() as db:
+            self.assertEqual(db.execute("SELECT attempt_count FROM research_outbox WHERE id=?", (oldest,)).fetchone()[0], 990)
+            advanced = db.execute("SELECT count(*) FROM research_outbox WHERE id<>? AND attempt_count>0", (oldest,)).fetchone()[0]
+        self.assertGreater(advanced, 0)
+        self.process()
+        self.assertEqual(len(self.read_matcher('hints')['items']), 2)
+
     def test_question_scope_revision_stales_old_hint_and_retains_decision(self):
         self.publish(self.source())
         self.question()

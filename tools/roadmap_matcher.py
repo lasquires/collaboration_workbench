@@ -539,7 +539,7 @@ def process_jobs(db: sqlite3.Connection, project: str, limit: int = 100) -> dict
     stale_hints = _stale_unavailable_findings(db, project)
     while processed < limit:
         now = _now()
-        event = db.execute("SELECT * FROM research_outbox WHERE project_id=? AND state='pending' AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY event_sequence,id LIMIT 1", (project, now)).fetchone()
+        event = db.execute("SELECT * FROM research_outbox WHERE project_id=? AND state='pending' AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY attempt_count,event_sequence,id LIMIT 1", (project, now)).fetchone()
         if event is None:
             break
         db.execute("SAVEPOINT matcher_outbox_page")
