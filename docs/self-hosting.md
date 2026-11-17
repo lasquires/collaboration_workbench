@@ -84,6 +84,8 @@ python tools/roadmap_cli.py --url https://workbench.example:8771 --token-file <p
 
 The CLI verifies TLS certificates and refuses authenticated remote HTTP and
 redirects. `RESEARCH_WORKSPACE_TOKEN_FILE` is the equivalent environment setting.
+For task briefs, claims and structured handoffs from a project checkout, see
+[remote worker instructions](remote-workers.md).
 Project mutations must use the credential's principal ID, returned by that
 project's capabilities endpoint, and the current revision. Owner-only repository
 setup uses an in-process credential-bound service adapter.

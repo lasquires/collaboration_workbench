@@ -2,10 +2,11 @@
 import argparse
 import hashlib
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import workspace
@@ -32,14 +33,31 @@ def brief(repo, ctx):
             "rules": rules}
 
 
+def worker_url(value, token_file):
+    """Keep local operation; remote workers use the authenticated HTTPS client."""
+    parsed = urlsplit(value)
+    if parsed.scheme == 'http':
+        return workspace.local_url(value)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or parsed.path not in ('', '/')
+            or any(character.isspace() for character in value)):
+        raise ValueError('Worker URL must be loopback HTTP or an HTTPS host without credentials or a path')
+    if not token_file:
+        raise ValueError('HTTPS worker access requires --token-file or RESEARCH_WORKSPACE_TOKEN_FILE')
+    return value.rstrip('/')
+
+
 def run(args):
     repo = args.repo.resolve()
     project = workspace.load_manifest(repo)["project_id"]
-    url = workspace.local_url(args.url)
+    token_file = getattr(args, 'token_file', None) or os.environ.get('RESEARCH_WORKSPACE_TOKEN_FILE')
+    url = worker_url(args.url, token_file)
+    def client(base, path, payload=None):
+        return workspace.request(base, path, payload, token_file=token_file, timeout=30)
     def get(key):
-        return workspace.request(url, "/v1/tasks/"+quote(key,safe="")+"/context?project_id="+project)["context"]
+        return client(url, "/v1/tasks/"+quote(key,safe="")+"/context?project_id="+project)["context"]
     def write(*ops):
-        return workspace.transaction(url, project, list(ops))
+        return workspace.transaction(url, project, list(ops), request_fn=client)
     ctx = get(args.task)
     uid = ctx["task"]["id"]
     if args.action == "brief":
@@ -121,11 +139,11 @@ def run(args):
     def event_for(context, text):
         return next((event for event in context["history"] if event.get("details",{}).get("text")==text), None)
     def guarded_write(ops):
-        caps=workspace.request(url,"/v1/projects/"+project+"/capabilities")
-        snapshot=workspace.request(url,"/v1/tasks/"+quote(uid,safe="")+"/context?project_id="+project)
+        caps=client(url,"/v1/projects/"+project+"/capabilities")
+        snapshot=client(url,"/v1/tasks/"+quote(uid,safe="")+"/context?project_id="+project)
         if (snapshot["context"]["fields"].get("claim") or {}).get("by")!=args.worker:
             raise ValueError("Task claim changed during handoff")
-        return workspace.request(url,"/v1/transactions",{"project_id":project,"actor":{"principal_id":caps["capabilities"]["local_principal_id"]},
+        return client(url,"/v1/transactions",{"project_id":project,"actor":{"principal_id":caps["capabilities"]["local_principal_id"]},
             "expected_revision":snapshot["revision"],"request_id":str(uuid.uuid4()),"operations":ops})
     if not event_for(ctx,pending):
         guarded_write([dict(op="journal",task_id=uid,kind="observation",text=pending)])
@@ -159,6 +177,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo",type=Path,default=Path.cwd())
     parser.add_argument("--url",default=workspace.DEFAULT_URL)
+    parser.add_argument('--token-file',type=Path,help='private host credential file; also RESEARCH_WORKSPACE_TOKEN_FILE')
     sub=parser.add_subparsers(dest="action",required=True)
     for action in ("brief","claim","finish","resume","watch","discover"):
         cmd=sub.add_parser(action)
