@@ -162,7 +162,11 @@ class MatcherTests(unittest.TestCase):
         self.publish(version, member="a"); self.publish(version, member="b")
         first = self.process(limit=1)
         self.assertEqual(first["processed_pairs"], 1)
+        pending = self.read_matcher('processing-status')['items'][0]['pending_jobs']
+        self.assertTrue(pending)
+        self.assertTrue(any(job['fanout_offset'] > 0 for job in pending))
         self.store = RoadmapStore(self.store.path)
+        self.assertEqual(self.read_matcher('processing-status')['items'][0]['pending_jobs'], pending)
         history = []
         for _ in range(20):
             result = self.process(limit=1); history.append(result)
@@ -171,6 +175,7 @@ class MatcherTests(unittest.TestCase):
         else:
             self.fail(f"outbox cursor did not finish within bounded retries: {history}")
         self.assertEqual(len(self.read_matcher("hints")["items"]), 2)
+        self.assertEqual(self.read_matcher('processing-status')['items'][0]['pending_jobs'], [])
         self.process()
         self.assertEqual(len(self.read_matcher("hints")["items"]), 2)
 

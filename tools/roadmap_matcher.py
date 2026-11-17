@@ -640,6 +640,12 @@ def read(db: sqlite3.Connection, resource: str, project: str, *, limit: int | No
                   "failed_replays": db.execute("SELECT count(*) FROM replay_jobs WHERE project_id=? AND state='failed'", (project,)).fetchone()[0]}
         counts["errors"] = [dict(r) for r in db.execute("SELECT id,kind,last_error,attempt_count FROM research_outbox WHERE project_id=? AND state='failed' ORDER BY event_sequence DESC LIMIT 20", (project,))]
         counts["errors"].extend(dict(r) for r in db.execute("SELECT id,rule_id,last_error FROM replay_jobs WHERE project_id=? AND state='failed' ORDER BY updated_at DESC LIMIT 20", (project,)))
+        # A pending count alone cannot distinguish a stalled job from a large
+        # fanout that is advancing. Expose durable cursors without source payloads.
+        counts["pending_jobs"] = [dict(r) for r in db.execute(
+            "SELECT id,kind,event_sequence,fanout_offset,attempt_count FROM research_outbox "
+            "WHERE project_id=? AND state='pending' ORDER BY event_sequence,id LIMIT 20", (project,))]
+        counts["pending_jobs_truncated"] = counts["pending_outbox"] > len(counts["pending_jobs"])
         return {"api_version": API_VERSION, "project_id": project, "revision": revision,
                 "items": [counts], "coverage": _coverage(db, project), "next_cursor": None}
     params.extend([limit + 1, offset])
