@@ -49,7 +49,18 @@ def run(args):
         if info["work_type"] != "bounded comparison" and not args.research:
             raise ValueError(info["work_type"] + ". Inspect the brief or select --research for deliberate investigation.")
         write(dict(op="claim",task_id=uid,claimant=args.worker,reserved_paths=args.paths))
-        return brief(repo,get(uid))
+        claimed = get(uid)
+        # Compatibility claims retain ownership/reservations after expiry, but
+        # repeating that label intentionally does not renew the protected lease.
+        if ((claimed["fields"].get("claim") or {}).get("by") == args.worker
+                and claimed["task"].get("progress", {}).get("claim", {}).get("state") == "expired"):
+            write(dict(op="heartbeat_claim", task_id=uid,
+                       expected_record_revision=claimed["task"]["record_revision"],
+                       rationale="Worker explicitly resumed its own expired claim.", lease_seconds=900))
+            claimed = get(uid)
+        if claimed["task"].get("progress", {}).get("claim", {}).get("state") == "expired":
+            raise RuntimeError("Claim remains expired; no active worker lease was established.")
+        return brief(repo,claimed)
     if args.action == "watch":
         group={"identifier":args.variable,"scope_key":args.owner,"namespace":args.namespace}
         if args.build: group["binary_build_id"]=args.build
