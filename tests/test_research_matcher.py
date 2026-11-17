@@ -164,6 +164,17 @@ class MatcherTests(unittest.TestCase):
         self.process()
         self.assertEqual(len(self.read_matcher("hints")["items"]), 2)
 
+    def test_sparse_watch_skips_unrelated_history_in_one_page(self):
+        version = self.source()
+        self.publish(version, identifier="position", member="other")
+        self.publish(version)
+        self.process()
+        self.question()
+        result = self.process(limit=1)
+        self.assertEqual(result["processed_pairs"], 1)
+        self.assertEqual(result["pending_outbox"], 0)
+        self.assertEqual(result["new_hints"], 1)
+
     def test_scope_isolation_empty_criteria_and_membership_scoped_inbox(self):
         version = self.source(); self.question({"any_of": [{"identifier": "speed", "namespace": "objc-field", "scope_key": "Other"}]})
         self.publish(version)

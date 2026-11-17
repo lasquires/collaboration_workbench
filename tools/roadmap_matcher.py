@@ -375,6 +375,33 @@ def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) ->
     elif event["kind"] not in ("create_question", "revise_question"):
         return 0, 0, True
     qcount = _question_count(db, project, question_id=question_id)
+    # A scoped watch on a large existing index usually names very few observations.
+    # Finish such a watch in one page. For larger sets keep the original durable
+    # cursor ordering, including any pages started by an earlier service version.
+    if question_id and qcount and event["fanout_offset"] == 0:
+        question = _question_at(db, project, 0, question_id=question_id)
+        groups = json.loads(question["criteria_json"])["any_of"]
+        identifiers = sorted({group["identifier"] for group in groups})
+        marks = ",".join("?" for _ in identifiers)
+        rows = db.execute(f"""
+            SELECT o.*, c.artifact_version_id,c.namespace,c.scope_key,c.locator_key,
+                   v.binary_build_id,v.sha256 AS source_sha256,
+                   (SELECT MIN(r.id) FROM index_runs r JOIN run_observations ro
+                    ON ro.project_id=r.project_id AND ro.run_id=r.id
+                    WHERE r.project_id=o.project_id AND r.state='published'
+                      AND ro.observation_id=o.id) AS source_run_id
+            FROM observations o JOIN occurrences c ON c.project_id=o.project_id AND c.id=o.occurrence_id
+            JOIN artifact_versions v ON v.project_id=c.project_id AND v.id=c.artifact_version_id
+            WHERE o.project_id=? AND o.identifier IN ({marks})
+            LIMIT ?""", (project, *identifiers, remaining + 1)).fetchall()
+        findings = _finding_count(db, project)
+        if len(rows) + findings <= remaining:
+            candidates = [_candidate(row) for row in rows if row["source_run_id"] is not None]
+            candidates.extend(_finding_at(db, project, i) for i in range(findings))
+            matches = sum(_process_pair(db, project, question, item, DEFAULT_RULE_VERSION)
+                          for item in candidates if item is not None)
+            db.execute("UPDATE research_outbox SET state='done',attempt_count=attempt_count+1,last_error=NULL WHERE id=?", (event["id"],))
+            return len(candidates), matches, True
     ccount = _candidate_count(db, project, run_id=run_id, finding_revision_id=finding_revision_id)
     total = qcount * ccount
     offset = event["fanout_offset"]
