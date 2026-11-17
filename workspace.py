@@ -175,6 +175,8 @@ The portable project identity is in `.research-workspace/project.json`. Keep it
 when cloning or moving the project. Local clone paths, databases and leases are
 not portable project files.
 
+When parentage is uncertain, record the behavior now. Choose a plausible parent and journal why the placement is tentative, or use the project-local Unknown parent under the root. Reuse that container. When evidence clarifies placement, move or relink the existing task UUID and record the reason so its history and other valid parent links survive.
+
 When evidence reveals unfinished behavior that can be investigated and tested independently, add it to the project map before handing off. Search existing tasks by behavior, aliases and relevant variables. Reuse the matching UUID and link it under each relevant parent. If no match exists, create a child under the most specific parent. Record the source evidence, open question and observable acceptance test in its Workbench record. Read back the parent link and journal the finding through the scoped API. A worker with write access owns this step. A read-only worker names the intended child and parent in its handoff so the coordinator can persist and verify them.
 
 Use the platform's scoped CLI/API for tasks, claims, research and journals.
