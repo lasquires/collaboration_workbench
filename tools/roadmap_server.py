@@ -733,6 +733,9 @@ def checkpoint_before_upgrade(path):
 
 def start_matcher_worker(path, interval=1.0):
     """One bounded durable-job consumer; publication never waits on matching."""
+    # Cap candidate/question pairs held under one IMMEDIATE writer lock.
+    # This is independent of SQL paging; larger batches starve task writes.
+    matcher_pair_limit = 1
     stop = threading.Event()
     def consume():
         while not stop.is_set():
@@ -741,7 +744,7 @@ def start_matcher_worker(path, interval=1.0):
                 for project in store.read_v1('projects')['items']:
                     if stop.is_set():
                         break
-                    store.process_jobs(project['id'],limit=100)
+                    store.process_jobs(project['id'],limit=matcher_pair_limit)
             except (StoreError, OSError, ValueError) as exc:
                 # The durable outbox/status endpoint is the recovery authority.
                 print(f'Matcher retry: {exc}', flush=True)
