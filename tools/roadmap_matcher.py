@@ -173,6 +173,15 @@ def _observation_count(db, project: str, *, run_id: str | None = None) -> int:
     return db.execute(sql, args).fetchone()[0]
 
 
+def _page_cached(cache: dict | None, key: tuple, load):
+    """Reuse read-only source lookups within one durable matcher page."""
+    if cache is None:
+        return load()
+    if key not in cache:
+        cache[key] = load()
+    return cache[key]
+
+
 def _observation_at(db, project: str, offset: int, *, run_id: str | None = None) -> sqlite3.Row | None:
     sql = "SELECT o.*,c.artifact_version_id,c.namespace,c.scope_key,c.locator_key,v.binary_build_id,v.sha256 AS source_sha256,MIN(r.id) AS source_run_id FROM observations o JOIN occurrences c ON c.project_id=o.project_id AND c.id=o.occurrence_id JOIN artifact_versions v ON v.project_id=c.project_id AND v.id=c.artifact_version_id JOIN run_observations ro ON ro.project_id=o.project_id AND ro.observation_id=o.id JOIN index_runs r ON r.project_id=ro.project_id AND r.id=ro.run_id WHERE o.project_id=? AND r.state='published'"
     args: list[Any] = [project]
@@ -225,24 +234,34 @@ def _finding_at(db: sqlite3.Connection, project: str, offset: int, *, revision_i
 
 
 def _candidate_count(db, project: str, *, run_id: str | None = None,
-                     finding_revision_id: str | None = None) -> int:
+                     finding_revision_id: str | None = None, cache: dict | None = None) -> int:
     if finding_revision_id is not None:
         return _finding_count(db, project, revision_id=finding_revision_id)
-    observations = _observation_count(db, project, run_id=run_id)
+    observations = _page_cached(cache, ("observation_count", project, run_id),
+        lambda: _observation_count(db, project, run_id=run_id))
     return observations if run_id is not None else observations + _finding_count(db, project)
 
 
 def _candidate_at(db, project: str, offset: int, *, run_id: str | None = None,
-                  finding_revision_id: str | None = None) -> dict | None:
+                  finding_revision_id: str | None = None, cache: dict | None = None) -> dict | None:
+    key = ("candidate_at", project, offset, run_id, finding_revision_id)
+    if cache is not None and key in cache:
+        return cache[key]
     if finding_revision_id is not None:
-        return _finding_at(db, project, offset, revision_id=finding_revision_id)
-    observation_count = _observation_count(db, project, run_id=run_id)
+        result = _finding_at(db, project, offset, revision_id=finding_revision_id)
+        if cache is not None: cache[key] = result
+        return result
+    observation_count = _page_cached(cache, ("observation_count", project, run_id),
+        lambda: _observation_count(db, project, run_id=run_id))
     if offset < observation_count:
         row = _observation_at(db, project, offset, run_id=run_id)
-        return _candidate(row) if row is not None else None
-    if run_id is not None:
-        return None
-    return _finding_at(db, project, offset - observation_count)
+        result = _candidate(row) if row is not None else None
+    elif run_id is not None:
+        result = None
+    else:
+        result = _finding_at(db, project, offset - observation_count)
+    if cache is not None: cache[key] = result
+    return result
 
 
 def _stale_unavailable_findings(db: sqlite3.Connection, project: str) -> int:
@@ -271,21 +290,25 @@ def _stale_unavailable_findings(db: sqlite3.Connection, project: str) -> int:
     return len(changed)
 
 
-def _question_count(db, project: str, *, question_id: str | None = None) -> int:
+def _question_count(db, project: str, *, question_id: str | None = None,
+                    cache: dict | None = None) -> int:
     sql = "SELECT count(*) FROM questions q JOIN question_revisions r ON r.project_id=q.project_id AND r.id=q.current_revision_id WHERE q.project_id=? AND q.state IN ('open','investigating') AND r.criteria_json NOT IN ('{}','null','[]')"
     args: list[Any] = [project]
     if question_id is not None:
         sql += " AND q.id=?"; args.append(question_id)
-    return db.execute(sql, args).fetchone()[0]
+    return _page_cached(cache, ("question_count", project, question_id),
+        lambda: db.execute(sql, args).fetchone()[0])
 
 
-def _question_at(db, project: str, offset: int, *, question_id: str | None = None) -> sqlite3.Row | None:
+def _question_at(db, project: str, offset: int, *, question_id: str | None = None,
+                 cache: dict | None = None) -> sqlite3.Row | None:
     sql = "SELECT q.*,r.text,r.expected_evidence,r.criteria_json,r.criteria_revision,r.presentation_revision FROM questions q JOIN question_revisions r ON r.project_id=q.project_id AND r.id=q.current_revision_id WHERE q.project_id=? AND q.state IN ('open','investigating') AND r.criteria_json NOT IN ('{}','null','[]')"
     args: list[Any] = [project]
     if question_id is not None:
         sql += " AND q.id=?"; args.append(question_id)
     sql += " ORDER BY q.id LIMIT 1 OFFSET ?"; args.append(offset)
-    return db.execute(sql, args).fetchone()
+    return _page_cached(cache, ("question_at", project, offset, question_id),
+        lambda: db.execute(sql, args).fetchone())
 
 
 def _recipients(db, project: str, question: sqlite3.Row) -> set[str]:
@@ -364,6 +387,7 @@ def _process_pair(db, project: str, question: sqlite3.Row, candidate_row: sqlite
 
 
 def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) -> tuple[int, int, bool]:
+    page_cache: dict = {}
     payload = json.loads(event["payload_json"])
     question_id = payload.get("id") if event["kind"] in ("create_question", "revise_question") else None
     run_id = None
@@ -374,12 +398,41 @@ def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) ->
         finding_revision_id = payload.get("id")
     elif event["kind"] not in ("create_question", "revise_question"):
         return 0, 0, True
-    qcount = _question_count(db, project, question_id=question_id)
+    qcount = _question_count(db, project, question_id=question_id, cache=page_cache)
+    if run_id:
+        # The run membership primary key already gives unique observations in
+        # the same order as the legacy cursor. Fetch a page once per question.
+        size = db.execute("""SELECT COUNT(*) FROM run_observations ro JOIN index_runs r
+            ON r.project_id=ro.project_id AND r.id=ro.run_id
+            WHERE ro.project_id=? AND ro.run_id=? AND r.state='published'""",
+            (project, run_id)).fetchone()[0]
+        offset = event["fanout_offset"]
+        total = size * qcount
+        processed = matches = 0
+        while offset < total and processed < remaining:
+            qi, ci = divmod(offset, size)
+            question = _question_at(db, project, qi)
+            rows = db.execute("""SELECT o.*,c.artifact_version_id,c.namespace,c.scope_key,c.locator_key,
+                    v.binary_build_id,v.sha256 AS source_sha256,ro.run_id AS source_run_id
+                FROM run_observations ro JOIN observations o ON o.project_id=ro.project_id AND o.id=ro.observation_id
+                JOIN occurrences c ON c.project_id=o.project_id AND c.id=o.occurrence_id
+                JOIN artifact_versions v ON v.project_id=c.project_id AND v.id=c.artifact_version_id
+                WHERE ro.project_id=? AND ro.run_id=? ORDER BY ro.observation_id LIMIT ? OFFSET ?""",
+                (project, run_id, remaining - processed, ci)).fetchall()
+            if not rows:
+                raise ValueError("Published run membership did not resolve to observations")
+            matches += sum(_process_pair(db, project, question, row, DEFAULT_RULE_VERSION) for row in rows)
+            offset += len(rows)
+            processed += len(rows)
+        done = offset >= total
+        db.execute("UPDATE research_outbox SET fanout_offset=?,state=?,attempt_count=attempt_count+1,last_error=NULL WHERE id=?",
+                   (offset, "done" if done else "pending", event["id"]))
+        return processed, matches, done
     # A scoped watch on a large existing index usually names very few observations.
     # Finish such a watch in one page. For larger sets keep the original durable
     # cursor ordering, including any pages started by an earlier service version.
     if question_id and qcount and event["fanout_offset"] == 0:
-        question = _question_at(db, project, 0, question_id=question_id)
+        question = _question_at(db, project, 0, question_id=question_id, cache=page_cache)
         groups = json.loads(question["criteria_json"])["any_of"]
         identifiers = sorted({group["identifier"] for group in groups})
         marks = ",".join("?" for _ in identifiers)
@@ -402,14 +455,16 @@ def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) ->
                           for item in candidates if item is not None)
             db.execute("UPDATE research_outbox SET state='done',attempt_count=attempt_count+1,last_error=NULL WHERE id=?", (event["id"],))
             return len(candidates), matches, True
-    ccount = _candidate_count(db, project, run_id=run_id, finding_revision_id=finding_revision_id)
+    ccount = _candidate_count(db, project, run_id=run_id,
+                              finding_revision_id=finding_revision_id, cache=page_cache)
     total = qcount * ccount
     offset = event["fanout_offset"]
     processed = matches = 0
     while offset < total and processed < remaining:
         qi, ci = divmod(offset, max(ccount, 1))
-        question = _question_at(db, project, qi, question_id=question_id)
-        candidate = _candidate_at(db, project, ci, run_id=run_id, finding_revision_id=finding_revision_id)
+        question = _question_at(db, project, qi, question_id=question_id, cache=page_cache)
+        candidate = _candidate_at(db, project, ci, run_id=run_id,
+                                  finding_revision_id=finding_revision_id, cache=page_cache)
         if question is None or candidate is None:
             break
         matches += int(_process_pair(db, project, question, candidate, DEFAULT_RULE_VERSION))
@@ -420,15 +475,16 @@ def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) ->
 
 
 def _process_replay_page(db, project: str, job: sqlite3.Row, remaining: int) -> tuple[int, int, bool]:
-    qcount = _question_count(db, project)
-    ccount = _candidate_count(db, project)
+    page_cache: dict = {}
+    qcount = _question_count(db, project, cache=page_cache)
+    ccount = _candidate_count(db, project, cache=page_cache)
     total = qcount * ccount
     offset = job["fanout_offset"]
     processed = matches = 0
     while offset < total and processed < remaining:
         qi, ci = divmod(offset, max(ccount, 1))
-        question = _question_at(db, project, qi)
-        candidate = _candidate_at(db, project, ci)
+        question = _question_at(db, project, qi, cache=page_cache)
+        candidate = _candidate_at(db, project, ci, cache=page_cache)
         if question is None or candidate is None:
             break
         matches += int(_process_pair(db, project, question, candidate, job["rule_version"]))
