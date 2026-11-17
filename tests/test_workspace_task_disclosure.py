@@ -123,7 +123,8 @@ class TaskDisclosureTests(unittest.TestCase):
             self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='task_disclosures'").fetchone())
         upgraded=RoadmapStore(store.path)
         with upgraded._connection() as db:
-            self.assertEqual(db.execute('SELECT schema_version FROM store_meta').fetchone()[0],17)
+            from tools.roadmap_schema import SCHEMA_VERSION
+            self.assertEqual(db.execute('SELECT schema_version FROM store_meta').fetchone()[0],SCHEMA_VERSION)
             self.assertEqual(db.execute('SELECT original_json FROM tasks').fetchone()[0],raw)
         self.stores[0]=upgraded;self.approve();self.fixture.apply(1,self.portable())
     def test_original_lookup_is_digest_bound_and_vault_survives_edits(self):

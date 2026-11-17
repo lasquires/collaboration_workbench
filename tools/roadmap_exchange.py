@@ -16,11 +16,11 @@ except ImportError:
 
 OPS = {'register_exchange_snapshot', 'import_bundle'}
 RESOURCES = {'exchange'}
-TABLES = tuple('projects principals areas area_paths tasks task_links containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_answer_selections question_resolution_events git_source_manifests journal_disclosures task_disclosures'.split())
+TABLES = tuple('projects principals areas area_paths tasks task_links containment secondary_containment entity_aliases attempts validation_records task_blockers merge_records task_redirects guidance_links artifact_roots artifact_blobs artifacts artifact_versions index_runs index_run_inputs index_batches index_errors occurrences observations run_observations observation_reconciliations occurrence_edges questions question_revisions negative_searches registry_imports registry_records findings finding_revisions evidence_links answers documents document_versions discussion_comments edit_proposals task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_answer_selections question_resolution_events git_source_manifests journal_disclosures task_disclosures'.split())
 IMMUTABLE = set('answers principals entity_aliases validation_records artifact_blobs artifact_versions occurrences observations question_revisions negative_searches registry_imports registry_records finding_revisions document_versions discussion_comments index_batches task_journal_entries merge_compensations finding_revision_lineage evidence_change_events research_review_notices answer_contexts answer_reviews question_resolution_events git_source_manifests journal_disclosures task_disclosures'.split())
 # Only mutable relationships have row-removal semantics. Evidence/history rows
 # remain append-only; unknown-base omissions never establish a deletion.
-PRESENCE_TABLES = {'task_links'}
+PRESENCE_TABLES = {'task_links','secondary_containment'}
 DECLARED_ANCESTOR = object()
 canonical = research.canonical
 _PORTABLE_FORMAT = 'workbench-exchange'
@@ -192,7 +192,7 @@ def export_bundle(db, project_id, ancestor_id=None, *, portable=False, _for_merg
 
 def _compatible_schema(db,schema):
     current=_schema(db)
-    return (set(current)-set(schema)<={'task_journal_entries','merge_compensations','finding_revision_lineage','evidence_change_events','research_review_notices','answer_contexts','answer_reviews','question_answer_selections','question_resolution_events','git_source_manifests','journal_disclosures','task_disclosures'}
+    return (set(current)-set(schema)<={'task_journal_entries','merge_compensations','finding_revision_lineage','evidence_change_events','research_review_notices','answer_contexts','answer_reviews','question_answer_selections','question_resolution_events','git_source_manifests','journal_disclosures','task_disclosures','secondary_containment'}
             and not set(schema)-set(current) and all(schema[key]==current[key] for key in schema))
 
 
@@ -237,6 +237,8 @@ def _validate(db, project, bundle):
                 try:
                     if not all(isinstance(json.loads(row[slot]),dict) for slot in ('record_json','original_json')):raise ValueError()
                 except (ValueError,TypeError):research.error(400,'Task exchange record must be an object')
+            if table=='secondary_containment' and row['required_for_parent']!=0:
+                research.error(400,'Secondary containment is optional; required scope uses the primary parent')
             key=_key(bundle['schema'],table,row)
             if key in seen: research.error(400,'Duplicate exchange identity')
             seen.add(key)
@@ -272,6 +274,8 @@ def _validate(db, project, bundle):
     task_ids={r['id'] for r in bundle['records']['tasks']}
     if any(r['source_id'] not in task_ids or r['target_id'] not in task_ids for r in bundle['records']['task_links']):
         research.error(400,'Foreign task-link endpoint')
+    if any(r['child_id'] not in {t['uid'] for t in bundle['records']['tasks']} or r['parent_id'] not in {t['uid'] for t in bundle['records']['tasks']} for r in bundle['records'].get('secondary_containment',[])):
+        research.error(400,'Foreign secondary-containment endpoint')
     area_ids={r['id'] for r in bundle['records']['areas']}
     principal_ids={r['id'] for r in bundle['records']['principals']}
     for table,rows in bundle['records'].items():
@@ -423,7 +427,7 @@ def _review_merged_import(db, project, previous, previous_scope):
     tasks = {row['uid']: dict(row) for row in db.execute('SELECT * FROM tasks WHERE project_id=?', (project,))}
     current_scope = {table: {tuple(row) for row in db.execute(query, (project,))}
                      for table, query in (
-                         ('containment', 'SELECT child_id,parent_id,required_for_parent FROM containment WHERE project_id=?'),
+                         ('containment', 'SELECT child_id,parent_id,required_for_parent FROM (SELECT project_id,child_id,parent_id,required_for_parent FROM containment WHERE parent_id IS NOT NULL UNION ALL SELECT project_id,child_id,parent_id,required_for_parent FROM secondary_containment) WHERE project_id=?'),
                          ('dependencies', "SELECT l.source_id,l.target_id,l.kind FROM task_links l JOIN tasks t ON t.id=l.source_id WHERE t.project_id=? AND l.kind='depends_on'"))}
     if current_scope != previous_scope:
         changed_parents = {item[1] for item in current_scope['containment'] ^ previous_scope['containment'] if item[1]}
@@ -436,12 +440,16 @@ def _review_merged_import(db, project, previous, previous_scope):
     _acyclic(set(by_legacy), [(row['id'], row['parent_id']) for row in tasks.values() if row['parent_id']], 'task parent')
     areas = {row['id']: dict(row) for row in db.execute('SELECT * FROM areas WHERE project_id=?', (project,))}
     _acyclic(set(areas), [(row['id'], row['parent_id']) for row in areas.values() if row['parent_id']], 'area parent')
-    containment = list(db.execute('SELECT child_id,parent_id,required_for_parent FROM containment WHERE project_id=?', (project,)))
-    _acyclic(set(tasks), [(row['child_id'], row['parent_id']) for row in containment if row['parent_id']], 'containment')
+    containment = list(db.execute('SELECT child_id,parent_id,required_for_parent FROM containment WHERE project_id=? AND parent_id IS NOT NULL', (project,)))
+    secondary = list(db.execute('SELECT child_id,parent_id,required_for_parent FROM secondary_containment WHERE project_id=?', (project,)))
+    all_containment=containment+secondary
+    _acyclic(set(tasks), [(row['child_id'], row['parent_id']) for row in all_containment if row['parent_id']], 'containment')
     for edge in containment:
         child = tasks.get(edge['child_id'])
         if child is None or (by_legacy.get(child['parent_id']) if child['parent_id'] else None) != edge['parent_id']:
             research.error(409, 'Merged containment disagrees with task parent')
+    if any(edge['child_id'] not in tasks or edge['parent_id'] not in tasks for edge in secondary):
+        research.error(409,'Merged secondary containment references a missing task')
     for row in tasks.values():
         record = json.loads(row['record_json'])
         if row['acceptance_state'] == 'passed':
@@ -451,7 +459,7 @@ def _review_merged_import(db, project, previous, previous_scope):
                 research.error(409, 'Merged acceptance lacks trusted local independent review')
         if record.get('status') == 'done':
             if row['acceptance_state'] != 'passed': research.error(409, 'Completed task lacks current local gate')
-            children = [edge for edge in containment if edge['parent_id'] == row['uid']]
+            children = [edge for edge in all_containment if edge['parent_id'] == row['uid']]
             if children and not row['decomposition_complete']: research.error(409, 'Completed parent has undeclared scope')
             for edge in children:
                 child = tasks[edge['child_id']]
@@ -482,7 +490,7 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
     previous = {row['uid']: dict(row) for row in db.execute('SELECT * FROM tasks WHERE project_id=?', (project,))} if review_import else None
     previous_scope = {table: {tuple(row) for row in db.execute(query, (project,))}
                       for table, query in (
-                          ('containment', 'SELECT child_id,parent_id,required_for_parent FROM containment WHERE project_id=?'),
+                          ('containment', 'SELECT child_id,parent_id,required_for_parent FROM (SELECT project_id,child_id,parent_id,required_for_parent FROM containment WHERE parent_id IS NOT NULL UNION ALL SELECT project_id,child_id,parent_id,required_for_parent FROM secondary_containment) WHERE project_id=?'),
                           ('dependencies', "SELECT l.source_id,l.target_id,l.kind FROM task_links l JOIN tasks t ON t.id=l.source_id WHERE t.project_id=? AND l.kind='depends_on'"))} if review_import else None
     choices=op.get('choices',{})
     if not isinstance(choices, dict): research.error(400, 'Exchange choices must be an object')
@@ -512,7 +520,7 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
                 selected=alternatives['remote'] if remote else alternatives['local']
                 primary=[column['name'] for column in local_schema[table] if column['pk']]
                 if selected is None:
-                    db.execute(f"DELETE FROM {table} WHERE {' AND '.join(column+'=?' for column in primary)}",tuple(task_keys.get(key,key) if table=='task_links' and column in ('source_id','target_id') else key for column,key in zip(primary,json.loads(change['key']))))
+                    db.execute(f"DELETE FROM {table} WHERE {' AND '.join(column+'=?' for column in primary)}",tuple(task_keys.get(key,key) if (table=='task_links' and column in ('source_id','target_id')) or (table=='secondary_containment' and column in ('child_id','parent_id')) else key for column,key in zip(primary,json.loads(change['key']))))
                 else:
                     if table=='task_links':selected=task_namespace.link_record(selected,task_keys)
                     columns=list(selected);values=tuple(selected[column] for column in columns)
@@ -563,6 +571,9 @@ def apply_operation(db, project, principal, op, request_id, *, review_import=Fal
                 row=workspace_task_disclosure.restore_private(db,project,row)
             if table=='tasks':row=task_namespace.task_record(row,task_keys)
             elif table=='task_links':row=task_namespace.link_record(row,task_keys)
+            elif table=='secondary_containment':
+                row['child_id']=task_keys.get(row['child_id'],row['child_id'])
+                row['parent_id']=task_keys.get(row['parent_id'],row['parent_id'])
             if table=='artifact_blobs': row['body']=base64.b64decode(row['body']['base64'])
             columns=list(row); pk=[c['name'] for c in bundle['schema'][table] if c['pk']]
             if change['status']=='addition':

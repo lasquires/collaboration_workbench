@@ -10,6 +10,7 @@
       "legacy_id": "PARENT",
       "project_id": "00000000-0000-4000-8000-000000000001",
       "parent_id": null,
+      "contains": [],
       "title": "Restore original behavior",
       "status": "active",
       "record_revision": 2,
@@ -56,6 +57,12 @@
       "legacy_id": "CHILD",
       "project_id": "00000000-0000-4000-8000-000000000001",
       "parent_id": "00000000-0000-4000-8000-000000000010",
+      "contains": [
+        {
+          "parent_id": "00000000-0000-4000-8000-000000000010",
+          "required_for_parent": true
+        }
+      ],
       "title": "Historical scope without verified gate",
       "status": "done",
       "record_revision": 1,
@@ -97,7 +104,8 @@
       "id": "contains:00000000-0000-4000-8000-000000000010:00000000-0000-4000-8000-000000000011",
       "kind": "contains",
       "source_id": "00000000-0000-4000-8000-000000000010",
-      "target_id": "00000000-0000-4000-8000-000000000011"
+      "target_id": "00000000-0000-4000-8000-000000000011",
+      "required_for_parent": true
     }
   ],
   "frontier": [

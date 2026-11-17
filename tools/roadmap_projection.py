@@ -78,9 +78,9 @@ def progress_projection(db, project_id, task_ids, now):
     rows = _rows(db,project_id)
     children = {}
     required = {}
-    for row in db.execute('SELECT * FROM containment WHERE project_id=? ORDER BY sibling_order,child_id',(project_id,)):
+    for row in containment_rows(db,project_id):
         children.setdefault(row['parent_id'],[]).append(row['child_id'])
-        required[row['child_id']] = bool(row['required_for_parent'])
+        required[(row['child_id'],row['parent_id'])] = bool(row['required_for_parent'])
     result = {}
     redirects={r['absorbed_id']:r['survivor_id'] for r in db.execute('SELECT * FROM task_redirects WHERE project_id=? AND active=1',(project_id,))}
     def canonical(uid):
@@ -112,11 +112,12 @@ def progress_projection(db, project_id, task_ids, now):
             if child['archive_reason'] is not None or child['archived_at'] is not None:
                 archived += 1
                 continue
-            bucket = buckets['required' if required[child_id] else 'optional']
+            is_required=required[(child_id,uid)]
+            bucket = buckets['required' if is_required else 'optional']
             state = json.loads(child['record_json'])['status']
             bucket['total'] += 1
             bucket['by_state'][state] = bucket['by_state'].get(state,0)+1
-            if required[child_id] and state=='done' and child['acceptance_state']=='passed' and child['validation_id']:
+            if is_required and state=='done' and child['acceptance_state']=='passed' and child['validation_id']:
                 bucket['accepted_done'] += 1
         claim = record.get('claim')
         claim_state = {'state':'unclaimed','principal_id':None,'label':None,'expires_at':None}
@@ -149,11 +150,18 @@ def progress_projection(db, project_id, task_ids, now):
     return result
 
 
-def _task(row, rows, progress):
+def containment_rows(db, project_id):
+    primary=[dict(r) for r in db.execute('SELECT project_id,child_id,parent_id,required_for_parent,sibling_order FROM containment WHERE project_id=? AND parent_id IS NOT NULL',(project_id,))]
+    secondary=[dict(r) for r in db.execute('SELECT project_id,child_id,parent_id,required_for_parent,0 AS sibling_order FROM secondary_containment WHERE project_id=?',(project_id,))]
+    return primary+secondary
+
+
+def _task(row, rows, progress, containment=None):
     record = json.loads(row['record_json'])
     parent = next((r['uid'] for r in rows.values() if r['id']==row['parent_id']),None)
     return {'id':row['uid'],'alias':row['alias'],'legacy_id':row['id'],'project_id':row['project_id'],
-            'parent_id':parent,'title':record['title'],'status':record['status'],
+            'parent_id':parent,'contains':[{'parent_id':edge['parent_id'],'required_for_parent':bool(edge['required_for_parent'])} for edge in (containment or []) if edge['child_id']==row['uid']],
+            'title':record['title'],'status':record['status'],
             'summary':record.get('summary',''),'owner':record.get('owner'),
             'record_revision':row['revision'],'structure_revision':row['structure_revision'],
             'archived_at':row['archived_at'],'archive_reason':row['archive_reason'],
@@ -259,20 +267,25 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
             _error(400,'Cursor outside result bounds')
         selected=ordered[offset:offset+limit]
         progress=progress_projection(db,project_id,[r['uid'] for r in selected],now)
-        return {**envelope,'items':[_task(r,rows,progress) for r in selected],
+        edges_all=containment_rows(db,project_id)
+        return {**envelope,'items':[_task(r,rows,progress,edges_all) for r in selected],
                 'event_cursor':event_cursor,'next_cursor':_encode({**binding,'offset':offset+limit}) if offset+limit<len(ordered) else None}
     if resource=='neighborhood':
         if type(depth) is not int or not 0<=depth<=LIMITS['neighborhood_depth']:
             _error(400,'Neighborhood depth outside configured bounds',limits=LIMITS)
         children={}
-        for row in db.execute('SELECT * FROM containment WHERE project_id=? ORDER BY sibling_order,child_id',(project_id,)):
+        edges_all=containment_rows(db,project_id)
+        for row in sorted(edges_all,key=lambda r:(r['sibling_order'],r['child_id'],r['parent_id'])):
             if rows[row['child_id']]['archive_reason'] is None and rows[row['child_id']]['archived_at'] is None:
                 children.setdefault(row['parent_id'],[]).append(row['child_id'])
         selected=[]
         queue=[(uid,0)]
+        visited=set()
         index=0
         while index<len(queue):
             node,level=queue[index]; index+=1
+            if node in visited: continue
+            visited.add(node)
             selected.append(node)
             if level<depth:
                 queue.extend((c,level+1) for c in children.get(node,[]))
@@ -280,15 +293,16 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
         if offset>len(selected):
             _error(400,'Cursor outside neighborhood bounds')
         progress=progress_projection(db,project_id,page,now)
-        nodes=[_task(rows[n],rows,progress) for n in page]
+        nodes=[_task(rows[n],rows,progress,edges_all) for n in page]
         visible=set(page)
-        edges=[{'id':'contains:'+n['parent_id']+':'+n['id'],'kind':'contains','source_id':n['parent_id'],'target_id':n['id']} for n in nodes if n['parent_id'] in visible]
+        edges=[{'id':'contains:'+edge['parent_id']+':'+edge['child_id'],'kind':'contains','source_id':edge['parent_id'],'target_id':edge['child_id'],'required_for_parent':bool(edge['required_for_parent'])} for edge in edges_all if edge['parent_id'] in visible and edge['child_id'] in visible]
         frontier=[{'id':n,'has_more_children':True} for n in page if any(c not in visible for c in children.get(n,[]))]
         return {**envelope,'root_id':uid,'nodes':nodes,'edges':edges,'frontier':frontier,'event_cursor':event_cursor,
                 'next_cursor':_encode({**binding,'offset':offset+limit}) if offset+limit<len(selected) else None}
     if resource=='context':
         row=rows[uid]
         progress=progress_projection(db,project_id,[uid],now)
+        edges_all=containment_rows(db,project_id)
         ancestors=[]; parent=row['parent_id']
         by_legacy={r['id']:r for r in rows.values()}
         while parent is not None:
@@ -332,7 +346,7 @@ def read_projection(db, resource, project_id=None, *, key=None, limit=None, curs
         section_cursors={'history':{'path':'/v1/tasks/'+uid+'/history','cursor':history_response['next_cursor'],'limit':LIMITS['history_items']}} if history_response['next_cursor'] else {}
         if attempt_page['next_cursor']: section_cursors['structured_attempts']={'path':'/v1/attempts','task_id':uid,'limit':50,'order':'desc','cursor':attempt_page['next_cursor']}
         if blocker_page['next_cursor']: section_cursors['blockers']={'path':'/v1/blockers','task_id':uid,'limit':50,'order':'desc','state':'open','cursor':blocker_page['next_cursor']}
-        context={'task':{**_task(row,rows,progress),'created_by':row['created_by'],'area_id':row['area_id'],'decomposition_complete':bool(row['decomposition_complete'])},'fields':{k:v for k,v in record.items() if k!='id'},'instructions':instructions,'ancestors':ancestors,'acceptance':record.get('acceptance'),'acceptance_state':row['acceptance_state'],'gate_revision':row['gate_revision'],'dependencies':dependencies,'blockers':typed_blockers[:50]+record.get('blockers',[]),'reservations':record.get('reserved_paths',[]),'validation':validation,'structured_attempts':attempts[:50],'findings':[],'hints':[],'progress':progress[uid],'history':history_response['items'], 'event_cursor':event_cursor,'omitted_sections':omitted,'section_cursors':section_cursors}
+        context={'task':{**_task(row,rows,progress,edges_all),'created_by':row['created_by'],'area_id':row['area_id'],'decomposition_complete':bool(row['decomposition_complete'])},'fields':{k:v for k,v in record.items() if k!='id'},'instructions':instructions,'ancestors':ancestors,'acceptance':record.get('acceptance'),'acceptance_state':row['acceptance_state'],'gate_revision':row['gate_revision'],'dependencies':dependencies,'blockers':typed_blockers[:50]+record.get('blockers',[]),'reservations':record.get('reserved_paths',[]),'validation':validation,'structured_attempts':attempts[:50],'findings':[],'hints':[],'progress':progress[uid],'history':history_response['items'], 'event_cursor':event_cursor,'omitted_sections':omitted,'section_cursors':section_cursors}
         try:
             from . import workspace_task_disclosure
         except ImportError:

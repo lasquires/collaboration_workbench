@@ -46,6 +46,39 @@ assert.deepEqual(plain(model.outlineRoots({nodes:[
 ]})).map(node=>node.id), ['focus','island'],
   'accessible outline includes the visible root of a focused descendant branch');
 
+const multiParent = model.projectSnapshot({nodes:[
+  {id:'root',parent_id:null}, {id:'p1',parent_id:'root'}, {id:'p2',parent_id:'root'},
+  {id:'shared',parent_id:'p1',contains:[
+    {parent_id:'p1',required_for_parent:true},
+    {parent_id:'p2',required_for_parent:false},
+  ]},
+],edges:[
+  {kind:'contains',source_id:'root',target_id:'p1'},
+  {kind:'contains',source_id:'root',target_id:'p2'},
+  {kind:'contains',source_id:'p1',target_id:'shared'},
+]});
+assert.equal(multiParent.nodes.filter(n=>n.id==='shared').length,1,
+  'secondary placement keeps one canonical task for selection and details');
+assert.deepEqual(multiParent.edges.filter(e=>e.type==='contains').map(e=>[e.source,e.target]),
+  [['root','p1'],['root','p2'],['p1','shared'],['p2','shared']], 'map projection renders every parent edge even if one is omitted from the edge payload');
+assert.deepEqual(model.outlineRoots(multiParent).map(n=>n.id), ['root']);
+const diamondLayout=model.layoutGraph(multiParent);
+const sharedPlacements=diamondLayout.placements.filter(item=>item.id==='shared');
+assert.equal(sharedPlacements.length,2, 'diamond shows the same UUID under both visible parents');
+assert.notDeepEqual(sharedPlacements[0].position,sharedPlacements[1].position,
+  'two dots occupy distinct coordinates while sharing one task identity');
+for(const placement of sharedPlacements)assert.equal(model.selectNode(multiParent,placement.id).id,'shared',
+  'either dot selects the same canonical task and details');
+assert.match(graphHtml,/id="containForm"/);
+assert.match(graphHtml,/op:"add_containment"/);
+assert.match(graphHtml,/id="centerTask"/);
+assert.match(graphHtml,/layout\.positions\.get\(n\.id\)/,
+  'selected canonical task can be centered in the current map view');
+assert.match(source,/for\(const placement of \(layout\.placements\|\|graph\.nodes\.map/,
+  'renderer draws repeated visual placements without creating duplicate task records');
+assert.match(source,/targetPlacement\?\.position/,
+  'each containment edge terminates at the dot placed under its parent');
+
 // Empty projects still need a baseline so untouched forms are clean and new drafts are protected.
 const emptyFields={id:'',title:'',summary:''};
 const emptyScope={graph:{nodes:[]},selected:null,baseDrafts:null,selectNode:model.selectNode,getDrafts:()=>({...emptyFields}),$ :()=>({textContent:''}),JSON};

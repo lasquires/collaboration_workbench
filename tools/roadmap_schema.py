@@ -7,7 +7,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 FOUNDATION_DDL = [
     "CREATE TABLE projects(id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, goal TEXT NOT NULL DEFAULT '', acceptance_json TEXT NOT NULL DEFAULT '[]', entry_documents_json TEXT NOT NULL DEFAULT '[]', coverage_json TEXT NOT NULL DEFAULT '{}', revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1), created_by TEXT, created_at TEXT, updated_at TEXT, archived_at TEXT)",
@@ -20,6 +20,8 @@ FOUNDATION_DDL = [
     "CREATE TABLE guidance_links(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),area_id TEXT,task_id TEXT,document_version_id TEXT,inheritance_scope TEXT NOT NULL CHECK(inheritance_scope IN ('self','descendants')),body TEXT NOT NULL,source_path TEXT,revision INTEGER NOT NULL DEFAULT 1,created_by TEXT REFERENCES principals(id),created_at TEXT,updated_at TEXT,archived_at TEXT,UNIQUE(project_id,id),FOREIGN KEY(project_id,area_id) REFERENCES areas(project_id,id),FOREIGN KEY(project_id,task_id) REFERENCES tasks(project_id,uid))",
     "CREATE TABLE entity_aliases(project_id TEXT NOT NULL REFERENCES projects(id),entity_type TEXT NOT NULL,alias TEXT NOT NULL,entity_id TEXT NOT NULL,PRIMARY KEY(project_id,entity_type,alias))",
     "CREATE TABLE containment(project_id TEXT NOT NULL REFERENCES projects(id),child_id TEXT NOT NULL UNIQUE,parent_id TEXT,sibling_order INTEGER NOT NULL DEFAULT 0 CHECK(sibling_order>=0),required_for_parent INTEGER NOT NULL DEFAULT 1 CHECK(required_for_parent IN (0,1)),revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1),PRIMARY KEY(project_id,child_id),FOREIGN KEY(project_id,child_id) REFERENCES tasks(project_id,uid),FOREIGN KEY(project_id,parent_id) REFERENCES tasks(project_id,uid),CHECK(child_id<>parent_id))",
+    "CREATE TABLE IF NOT EXISTS secondary_containment(project_id TEXT NOT NULL REFERENCES projects(id),child_id TEXT NOT NULL,parent_id TEXT NOT NULL,required_for_parent INTEGER NOT NULL DEFAULT 0 CHECK(required_for_parent=0),revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1),PRIMARY KEY(project_id,child_id,parent_id),FOREIGN KEY(project_id,child_id) REFERENCES tasks(project_id,uid),FOREIGN KEY(project_id,parent_id) REFERENCES tasks(project_id,uid),CHECK(child_id<>parent_id))",
+    "CREATE INDEX IF NOT EXISTS secondary_containment_parent ON secondary_containment(project_id,parent_id,child_id)",
     "CREATE TABLE workspace_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,project_id TEXT NOT NULL REFERENCES projects(id),request_id TEXT NOT NULL REFERENCES transactions(request_id) DEFERRABLE INITIALLY DEFERRED,actor_id TEXT REFERENCES principals(id),entity_type TEXT,entity_id TEXT,kind TEXT NOT NULL,before_json TEXT,after_json TEXT,rationale TEXT,recorded_at TEXT NOT NULL)",
     "CREATE INDEX workspace_events_project_sequence ON workspace_events(project_id,sequence)",
     "CREATE INDEX tasks_project_uid ON tasks(project_id,uid)",
@@ -103,7 +105,7 @@ def migrate(db, *, fresh=False, bootstrap_slug="ssg2"):
     version = db.execute('SELECT schema_version FROM store_meta WHERE singleton=1').fetchone()[0]
     if version == SCHEMA_VERSION:
         return
-    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16):
+    if version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
         raise ValueError('Unsupported task database schema')
     db.execute('BEGIN IMMEDIATE')
     try:
@@ -138,6 +140,20 @@ def migrate(db, *, fresh=False, bootstrap_slug="ssg2"):
             db.execute("INSERT INTO projects(id,slug,goal,coverage_json) VALUES(?,?,?,?)", (project,slug,goal,json.dumps({'source':'legacy task import' if slug=='ssg2' else 'empty workspace','complete':False,'uncovered':['research collections']})))
             principal_for_label(db,project,'local')
             sync_tasks(db,project_id=project)
+        if version <= 17:
+            for statement in FOUNDATION_DDL:
+                if statement.startswith('CREATE TABLE IF NOT EXISTS secondary_containment') or statement.startswith('CREATE INDEX IF NOT EXISTS secondary_containment_parent'):
+                    db.execute(statement)
+            # The original triggers guard primary-only trees. Replace them with
+            # combined-graph checks so future primary moves also respect links.
+            for name in ('containment_cycle_insert','containment_cycle_update','secondary_containment_cycle_insert','secondary_containment_cycle_update'):
+                db.execute('DROP TRIGGER IF EXISTS '+name)
+            combined = "WITH RECURSIVE ancestors(id) AS (SELECT NEW.parent_id UNION SELECT e.parent_id FROM (SELECT project_id,child_id,parent_id FROM containment UNION ALL SELECT project_id,child_id,parent_id FROM secondary_containment) e JOIN ancestors a ON e.child_id=a.id WHERE e.project_id=NEW.project_id AND e.parent_id IS NOT NULL) SELECT 1 FROM ancestors WHERE id=NEW.child_id"
+            db.execute("CREATE TRIGGER containment_cycle_insert BEFORE INSERT ON containment WHEN NEW.parent_id IS NOT NULL BEGIN SELECT CASE WHEN EXISTS("+combined+") THEN RAISE(ABORT,'containment cycle') END; END")
+            db.execute("CREATE TRIGGER containment_cycle_update BEFORE UPDATE OF parent_id ON containment WHEN NEW.parent_id IS NOT NULL AND NEW.parent_id IS NOT OLD.parent_id BEGIN SELECT CASE WHEN EXISTS("+combined+") THEN RAISE(ABORT,'containment cycle') END; END")
+            for event in ('insert','update'):
+                when = 'BEFORE INSERT ON secondary_containment' if event=='insert' else 'BEFORE UPDATE OF parent_id ON secondary_containment WHEN NEW.parent_id IS NOT OLD.parent_id'
+                db.execute("CREATE TRIGGER secondary_containment_cycle_"+event+" "+when+" BEGIN SELECT CASE WHEN EXISTS("+combined+") THEN RAISE(ABORT,'containment cycle') END; END")
         try:
             from . import roadmap_research, roadmap_matcher, roadmap_documents, roadmap_structure, roadmap_exchange
         except ImportError:

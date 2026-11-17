@@ -576,6 +576,14 @@ class RoadmapStore:
                         if isinstance(op.get(field),str) and op[field] in local_creates:
                             op[field] = local_creates[op[field]]
                     continue
+                if op.get('op') in {'add_containment','remove_containment'}:
+                    for field in ('task_id','parent_id'):
+                        if isinstance(op.get(field),str) and op[field] in local_creates:
+                            op[field]=local_creates[op[field]]
+                        elif op.get(field) is not None:
+                            uid=roadmap_projection.resolve_entity(db,project,'task',op[field])
+                            op[field]=db.execute('SELECT id FROM tasks WHERE project_id=? AND uid=?',(project,uid)).fetchone()[0]
+                    continue
                 if op.get("op") in roadmap_research.OPS | roadmap_matcher.OPS | roadmap_documents.OPS | roadmap_projects.OPS | roadmap_exchange.OPS | {"process_jobs"}:
                     continue
                 if op.get("op") == "create":
@@ -706,6 +714,49 @@ class RoadmapStore:
                 research_changes = []
                 task_operations = []
                 for operation in operations:
+                    if _workspace and isinstance(operation,dict) and operation.get('op') in {'add_containment','remove_containment'}:
+                        allowed={'op','task_id','parent_id'}
+                        if not allowed <= set(operation) or set(operation)-allowed-({'required_for_parent'} if operation['op']=='add_containment' else set()):
+                            raise StoreError(400,'Invalid containment operation fields')
+                        child=_id(operation.get('task_id'));parent=_id(operation.get('parent_id'))
+                        child_row=db.execute('SELECT uid,project_id FROM tasks WHERE id=?',(child,)).fetchone()
+                        parent_row=db.execute('SELECT uid,project_id FROM tasks WHERE id=?',(parent,)).fetchone()
+                        project=_workspace['payload']['project_id']
+                        if not child_row or not parent_row or child_row['project_id']!=project or parent_row['project_id']!=project:
+                            raise StoreError(404,'Containment task not found in project')
+                        if tasks[child]['record']['status']=='done' or tasks[parent]['record']['status']=='done':
+                            raise StoreError(409,'Reopen completed task before changing containment')
+                        if operation['op']=='add_containment':
+                            required=operation.get('required_for_parent',False)
+                            if type(required) is not bool:
+                                raise StoreError(400,'required_for_parent must be boolean')
+                            if required:
+                                raise StoreError(400,'Secondary containment is optional; required scope uses the primary parent')
+                            exists=db.execute('SELECT 1 FROM containment WHERE project_id=? AND child_id=? AND parent_id=? UNION SELECT 1 FROM secondary_containment WHERE project_id=? AND child_id=? AND parent_id=?',(project,child_row['uid'],parent_row['uid'],project,child_row['uid'],parent_row['uid'])).fetchone()
+                            if exists: raise StoreError(409,'Containment path already exists')
+                            try:
+                                db.execute('INSERT INTO secondary_containment(project_id,child_id,parent_id,required_for_parent) VALUES(?,?,?,?)',(project,child_row['uid'],parent_row['uid'],int(required)))
+                            except sqlite3.IntegrityError as exc:
+                                if 'cycle' in str(exc).lower(): raise StoreError(400,'Cyclic containment graph') from exc
+                                raise StoreError(409,'Containment path conflicts with existing state') from exc
+                            event_details={'after':{'child_id':child_row['uid'],'parent_id':parent_row['uid'],'required_for_parent':False}}
+                        else:
+                            prior_edge=db.execute('SELECT child_id,parent_id,required_for_parent FROM secondary_containment WHERE project_id=? AND child_id=? AND parent_id=?',(project,child_row['uid'],parent_row['uid'])).fetchone()
+                            if prior_edge is None: raise StoreError(404,'Secondary containment path not found')
+                            deleted=db.execute('DELETE FROM secondary_containment WHERE project_id=? AND child_id=? AND parent_id=?',(project,child_row['uid'],parent_row['uid']))
+                            event_details={'before':{'child_id':prior_edge['child_id'],'parent_id':prior_edge['parent_id'],'required_for_parent':bool(prior_edge['required_for_parent'])},'after':None}
+                        task_state_legacy.add(child)
+                        structure_ids.add(child_row['uid'])
+                        ancestor=parent
+                        visited=set()
+                        while ancestor is not None and ancestor not in visited:
+                            visited.add(ancestor)
+                            row=db.execute('SELECT uid FROM tasks WHERE id=? AND project_id=?',(ancestor,project)).fetchone()
+                            if row is None: break
+                            structure_ids.add(row['uid'])
+                            ancestor=tasks[ancestor]['parent_id']
+                        event_data.append((child,operation['op'],event_details))
+                        continue
                     if _workspace and isinstance(operation,dict) and operation.get('op') in roadmap_structure.OPS:
                         project = _workspace['payload']['project_id']
                         principal = _workspace['payload']['actor']['principal_id']

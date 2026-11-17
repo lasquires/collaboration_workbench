@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { radialLayout, ancestryPath } = require('../docs/workspace-layout.js');
+const { radialLayout, ancestryPath, parentsOf } = require('../docs/workspace-layout.js');
 
 const graphOf = (parents) => ({ nodes: Object.entries(parents).map(([id, parent_id]) => ({ id, parent_id })) });
 
@@ -56,6 +56,27 @@ function distance(a, b) { return Math.hypot(a.x - b.x, (a.y - b.y) * 82); }
   const layout = radialLayout(graph);
   assert.equal(layout.positions.size, 3);
   assert.deepEqual(ancestryPath(graph, 'a'), ['b', 'a']);
+}
+
+{
+  const graph = { nodes: [
+    { id: 'primary', parent_id: null },
+    { id: 'secondary', parent_id: null },
+    { id: 'shared', parent_id: 'primary', contains: [
+      { parent_id: 'primary', required_for_parent: true },
+      { parent_id: 'secondary', required_for_parent: false },
+    ] },
+  ] };
+  const layout = radialLayout(graph);
+  assert.deepEqual([...layout.children.get('primary')], ['shared']);
+  assert.deepEqual([...layout.children.get('secondary')], ['shared'],
+    'map graph retains a second parent placement while task identity stays canonical');
+  assert.deepEqual(parentsOf(graph.nodes[2]), ['primary', 'secondary']);
+  assert.equal(layout.positions.size, 3, 'one canonical task remains one selectable map node');
+  const sharedDots = layout.placements.filter(item => item.id === 'shared');
+  assert.equal(sharedDots.length, 2, 'the same task gets one visible dot under each parent');
+  assert.notDeepEqual(sharedDots[0].position, sharedDots[1].position,
+    'two parents in the same map have distinct child dot coordinates');
 }
 
 console.log('workspace radial layout checks passed');

@@ -5,7 +5,7 @@ try:
 except ImportError:
     import roadmap_structure as structure,roadmap_research as research
 
-TASK_OPERATIONS={'create','create_task','update','set_parent','archive','journal','add_link','remove_link'}|structure.OPS
+TASK_OPERATIONS={'create','create_task','update','set_parent','archive','journal','add_link','remove_link','add_containment','remove_containment'}|structure.OPS
 DOCUMENT_OPERATIONS={'create_document','register_document_version','add_comment','propose_edit','accept_proposal','reject_proposal','set_feedback'}
 OPERATIONS=TASK_OPERATIONS|DOCUMENT_OPERATIONS|{'create_question','revise_question','create_finding','revise_finding','archive_finding','restore_finding','create_answer','review_answer','resolve_question','set_question_state'}
 TABLES={'project':'projects','area':'areas','question':'questions','document':'documents','proposal':'edit_proposals','finding':'findings'}
@@ -102,6 +102,10 @@ def check_records(db,payload,operations):
             elif name in ('add_link','remove_link'):
                 task(operation.get('target_id'))
                 if operation.get('kind')=='depends_on':ancestry(row['parent_id'])
+            elif name in ('add_containment','remove_containment'):
+                parent=task(operation.get('parent_id'),True)
+                ancestry(row['uid'])
+                if parent:ancestry(parent['uid'])
             elif name in ('set_parent','move_task','attach_child','detach_child','archive','archive_task','reopen_task','set_task_scope'):
                 ancestry(row['parent_id'])
                 if name in ('set_parent','move_task','attach_child'):ancestry(operation.get('parent_id'))

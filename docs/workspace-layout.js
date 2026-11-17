@@ -2,6 +2,31 @@
   'use strict';
 
   function nodesOf(graph) { return Array.isArray(graph && graph.nodes) ? graph.nodes : []; }
+  function parentsOf(node) {
+    const supplied = Array.isArray(node && node.contains) ? node.contains : [];
+    const parents = supplied.map(edge => typeof edge === 'string' ? edge : edge && edge.parent_id).filter(id => id != null);
+    if (node && node.parent_id != null && !parents.includes(node.parent_id)) parents.unshift(node.parent_id);
+    return parents;
+  }
+  function placementsOf(graph, positions) {
+    const placements = [], nodes = nodesOf(graph), byId = new Map(nodes.map(node => [node.id, node]));
+    for (const node of nodes) {
+      const primary = node.parent_id ?? null, position = positions.get(node.id);
+      if (!position) continue;
+      placements.push({ id: node.id, parent_id: primary, key: node.id, position });
+      const extraParents = parentsOf(node).filter(parent => parent !== primary);
+      for (const parent of extraParents) {
+        const parentNode = byId.get(parent), parentPosition = positions.get(parent);
+        if (!parentNode || !parentPosition) continue;
+        const primaryPosition = positions.get(primary);
+        if (!primaryPosition) continue;
+        placements.push({ id: node.id, parent_id: parent, key: `${node.id}@@${parent}`,
+          position: { ...position, x: position.x + parentPosition.x - primaryPosition.x,
+            y: position.y + parentPosition.y - primaryPosition.y + 0.35, island: parentPosition.island } });
+      }
+    }
+    return placements;
+  }
   function ancestryPath(graph, id) {
     const nodes = nodesOf(graph);
     const byId = new Map();
@@ -12,6 +37,7 @@
     while (byId.has(current) && !seen.has(current)) {
       seen.add(current);
       reverse.push(current);
+      // Keep the established primary-parent ancestry for focus highlighting.
       const parent = byId.get(current).parent_id;
       if (parent == null || !byId.has(parent) || seen.has(parent)) break;
       current = parent;
@@ -25,13 +51,13 @@
     for (const node of nodes) if (node && node.id != null && !byId.has(node.id)) byId.set(node.id, node);
     const children = new Map([...byId.keys()].map(id => [id, []]));
     for (const node of byId.values()) {
-      if (node.parent_id != null && children.has(node.parent_id)) children.get(node.parent_id).push(node.id);
+      for (const parent of parentsOf(node)) if (children.has(parent) && !children.get(parent).includes(node.id)) children.get(parent).push(node.id);
     }
 
     const positions = new Map(), rings = [];
     const limit = options.depth == null ? Infinity : Math.max(0, Number(options.depth) || 0);
     const chosen = options.root != null && byId.has(options.root) ? [options.root] : null;
-    const roots = chosen || [...byId.values()].filter(node => node.parent_id == null || !byId.has(node.parent_id)).map(node => node.id);
+    const roots = chosen || [...byId.values()].filter(node => !parentsOf(node).some(parent => byId.has(parent))).map(node => node.id);
     const assigned = new Set();
     const islandData = [];
 
@@ -136,10 +162,10 @@
       }
     }
     const width = Math.max(500, columns * cell), height = Math.max(300, Math.ceil(islandData.length / columns) * cell);
-    return { positions, children, width, height, rings };
+    return { positions, children, width, height, rings, placements: placementsOf(graph, positions) };
   }
 
-  const api = { radialLayout, ancestryPath };
+  const api = { radialLayout, ancestryPath, parentsOf, placementsOf };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.WorkspaceLayouts = api;
 })(typeof window !== 'undefined' ? window : globalThis);
