@@ -447,6 +447,18 @@ def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) ->
         while offset < total and processed < remaining:
             qi, ci = divmod(offset, size)
             question = _question_at(db, project, qi)
+            identifiers = sorted({group['identifier'] for group in json.loads(question['criteria_json'])['any_of']})
+            marks = ','.join('?' for _ in identifiers)
+            # Exact identifier equality is required by every supported group.
+            # Skip an empty question/run intersection without changing the
+            # legacy question-major cursor or any nonempty match evaluation.
+            exists = db.execute(f"""SELECT 1 FROM observations o JOIN run_observations ro
+                ON ro.project_id=o.project_id AND ro.observation_id=o.id
+                WHERE ro.project_id=? AND ro.run_id=? AND o.identifier IN ({marks}) LIMIT 1""",
+                (project, run_id, *identifiers)).fetchone()
+            if exists is None:
+                offset = (qi + 1) * size
+                continue
             rows = db.execute("""SELECT o.*,c.artifact_version_id,c.namespace,c.scope_key,c.locator_key,
                     v.binary_build_id,v.sha256 AS source_sha256,ro.run_id AS source_run_id
                 FROM run_observations ro JOIN observations o ON o.project_id=ro.project_id AND o.id=ro.observation_id

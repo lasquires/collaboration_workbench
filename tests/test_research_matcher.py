@@ -12,6 +12,15 @@ from tools.roadmap_schema import principal_for_label
 
 
 class MatcherTests(unittest.TestCase):
+    def test_published_run_without_watched_identifier_skips_empty_intersection(self):
+        version = self.source()
+        self.question()
+        self.publish(version, identifier='unrelated')
+        result = self.process(limit=1)
+        self.assertEqual(result['pending_outbox'], 0)
+        self.assertEqual(result['processed_pairs'], 0)
+        self.assertEqual(self.read_matcher('hints')['items'], [])
+
     def test_large_historical_job_does_not_starve_new_notifications(self):
         version = self.source()
         self.question()
