@@ -864,13 +864,14 @@ class RoadmapStore:
                 roadmap_structure.finalize_merges(db,request_id)
                 workspace_merge_compensation.finalize_compensations(db,pending_compensations)
                 db.execute("UPDATE store_meta SET revision=revision+1")
-                result = self._snapshot(db)
                 if _workspace:
                     changed = list(dict.fromkeys(item[0] for item in event_data if item[0]))
-                    result = {"revision": result["revision"], "event_cursor": roadmap_projection._event_cursor(db, project),
+                    result = {"revision": self._revision(self._meta(db)), "event_cursor": roadmap_projection._event_cursor(db, project),
                               "changed_records": [{"type": "task", "id": row["uid"], "record_revision": row["revision"]}
                                   for task_id in changed for row in db.execute("SELECT uid,revision FROM tasks WHERE id=?", (task_id,))] + research_changes,
                               "request_id": request_id}
+                else:
+                    result = self._snapshot(db)
                 db.execute("INSERT INTO transactions VALUES(?,?,?)", (request_id, digest, _json(result)))
                 db.commit()
                 return result
