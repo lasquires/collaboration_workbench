@@ -42,9 +42,16 @@ class WorkerSource(unittest.TestCase):
                 dict(op="register_root", id="root", path=str(repo)),
                 dict(op="register_root", id="wrong", path=str(other))])
             first = register(repo, url, "task", "root", "source", "source.bin", "binary", "build")
-            repeat = register(repo, url, "task", "root", "different-proposed-id", "source.bin", "binary", "build")
+            repeat = register(repo, url, "task", None, "different-proposed-id", "source.bin", "binary", "build")
             self.assertEqual(first["artifact_version_id"], repeat["artifact_version_id"])
             self.assertEqual(repeat["artifact_id"], "source")
+            (repo / "unregistered.bin").write_bytes(b"new source")
+            with self.assertRaisesRegex(ValueError, "No unique registered source"):
+                register(repo, url, "task", None, "new", "unregistered.bin", "binary", "build")
+            workspace.transaction(url, project, [dict(op="register_artifact", id="shadow",
+                root_id="wrong", relative_path="source.bin", kind="binary")])
+            with self.assertRaisesRegex(ValueError, "No unique registered source"):
+                register(repo, url, "task", None, "ambiguous", "source.bin", "binary", "build")
             with self.assertRaises(ValueError):
                 register(repo, url, "task", "root", "source", "../outside", "binary", "build")
             before = store.snapshot()["revision"]

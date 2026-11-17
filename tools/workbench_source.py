@@ -38,6 +38,15 @@ def register(repo, url, task, root_id, artifact_id, relative_path, kind, build):
             break
     relative_path = path.as_posix()
     existing = next((item for item in artifacts if item["id"] == artifact_id), None)
+    if root_id is None:
+        candidates = [item for item in artifacts if item["relative_path"] == relative_path
+                      and item["kind"] == kind]
+        if existing:
+            root_id = existing["root_id"]
+        elif len(candidates) == 1:
+            root_id = candidates[0]["root_id"]
+        else:
+            raise ValueError("No unique registered source matches path/kind; inspect sources and specify its bound --root-id")
     same_source = next((item for item in artifacts if item["root_id"] == root_id
                         and item["relative_path"] == relative_path), None)
     if existing and (existing["root_id"], existing["relative_path"], existing["kind"]) != (root_id, relative_path, kind):
@@ -70,7 +79,8 @@ def main():
     parser.add_argument("path")
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--url", default=workspace.DEFAULT_URL)
-    for field in ("root-id", "artifact-id", "kind", "build"):
+    parser.add_argument("--root-id", help="Optional when the path/kind already identifies one registered source")
+    for field in ("artifact-id", "kind", "build"):
         parser.add_argument("--" + field, required=True)
     args = parser.parse_args()
     print(json.dumps(register(args.repo, args.url, args.task, args.root_id,

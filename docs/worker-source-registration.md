@@ -7,7 +7,10 @@ the database. From the connected project checkout, run the installed app tool:
 python <app-install>/tools/workbench_source.py TASK relative/path/to/source --root-id EXISTING_ROOT --artifact-id PROPOSED_ID --kind encrypted-plist --build ORIGINAL_BUILD
 ```
 
-Use the root already bound to this checkout. The path must stay inside the
+Omit `--root-id` to reuse a unique registered source with the same path and kind.
+Missing or ambiguous matches require an explicit bound root; the command never
+guesses among snapshot and local roots. For a new source, use the root already
+bound to this checkout. The path must stay inside the
 project repository. The command hashes the file locally, then the service checks
 that hash against its bound root before registering an immutable version. A
 different bound file rejects the entire transaction, including its task journal.
