@@ -289,3 +289,7 @@ original-note inspection, paging and exact uncertain-request recovery. Browser
 reload recovery stores request IDs/modes in session storage, not raw notes or
 credentials; it never submits automatically. Broader collaboration UI and project
 cutover have separate acceptance gates.
+
+## Discovering child tasks
+
+When evidence reveals unfinished behavior that can be investigated and tested independently, add it to the project map before handing off. Search existing tasks by behavior, aliases and relevant variables. Reuse the matching UUID and link it under each relevant parent. If no match exists, create a child under the most specific parent. Record the source evidence, open question and observable acceptance test in its Workbench record. Read back the parent link and journal the finding through the scoped API. A worker with write access owns this step. A read-only worker names the intended child and parent in its handoff so the coordinator can persist and verify them.
