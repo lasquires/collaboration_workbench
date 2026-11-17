@@ -37,3 +37,18 @@ python -m unittest tests.test_question_sparse_matcher tests.test_research_matche
 The prior receipt-size reduction and lease-renewal fixes address separate issues.
 The new paging change must be validated against live queue drainage and actual
 worker writes before declaring the observed contention resolved.
+
+## Deployment verification
+
+Deployed `e8427d3` and removed the temporary diagnostic wrapper. The two existing
+question jobs drained to zero pending, zero failed, zero replay jobs and no
+errors. The first immediate post-reload claim still met the busy timeout while
+that backlog was draining; no immediate-success claim was made.
+
+After drainage, the real getter worker's expired lease renewed to live. Its
+existing pending handoff resumed, created follow-up
+`fb8e40b4-8436-44bd-a9f7-6a37abe1eb0f`, recorded its result and released its claim.
+The previously blocked quad worker handoff then recorded the independently
+verified seven-control result and released its claim. All four managed previews
+were restored and checked with actual HTTP200 requests. These observations
+verify the blocked workflow under this load, not a guarantee for every workload.
