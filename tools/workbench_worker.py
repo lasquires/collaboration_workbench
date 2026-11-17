@@ -80,7 +80,8 @@ def run(args):
             raise RuntimeError("Claim remains expired; no active worker lease was established.")
         return brief(repo,claimed)
     if args.action == "watch":
-        group={"identifier":args.variable,"scope_key":args.owner,"namespace":args.namespace}
+        group={"identifier":args.variable,"namespace":args.namespace}
+        if args.owner: group['scope_key']=args.owner
         if args.build: group["binary_build_id"]=args.build
         q=str(uuid.uuid4())
         return write(dict(op="create_question",id=q,text=args.question,owner_task_id=uid,criteria={"any_of":[group]}),
@@ -199,7 +200,8 @@ def main():
             cmd.add_argument("--next-step")
             cmd.add_argument("--pass-condition")
         if action in ("watch","discover"):
-            for field in ("variable","owner"):cmd.add_argument("--"+field,required=True)
+            cmd.add_argument('--variable',required=True)
+            cmd.add_argument('--owner',required=action=='discover',help='known owner; omit on watches when unresolved')
             cmd.add_argument("--namespace",default="variable")
         if action=="watch":
             cmd.add_argument("--build")

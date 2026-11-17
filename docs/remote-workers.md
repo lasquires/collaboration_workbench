@@ -22,3 +22,11 @@ GitHub permissions, or automatically connect that worker's checkout to the host.
 Code changes still use its own clone and Git credentials. Local-only source-root
 registration may require a coordinated host-side step; do not invent host paths
 or create another project identity to work around it.
+
+When missing information blocks a hypothesis or valid differential test, create
+a task-owned question using `watch TASK --variable IDENTIFIER --namespace selector
+--question "What observation would unblock this comparison?"`. Add `--owner` and
+`--build` only when established. An unknown-owner watch omits those constraints,
+allowing later provider findings from other classes/libraries to become leads.
+Discovery still requires its actual source owner. Notifications invite review;
+they do not resolve the question or establish a match automatically.
