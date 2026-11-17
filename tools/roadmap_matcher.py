@@ -459,17 +459,30 @@ def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) ->
             if exists is None:
                 offset = (qi + 1) * size
                 continue
-            rows = db.execute("""SELECT o.*,c.artifact_version_id,c.namespace,c.scope_key,c.locator_key,
+            start = db.execute("""SELECT observation_id FROM run_observations
+                WHERE project_id=? AND run_id=? ORDER BY observation_id LIMIT 1 OFFSET ?""",
+                (project, run_id, ci)).fetchone()
+            if start is None:
+                raise ValueError("Published run cursor did not resolve to membership")
+            budget = remaining - processed
+            rows = db.execute(f"""SELECT o.*,c.artifact_version_id,c.namespace,c.scope_key,c.locator_key,
                     v.binary_build_id,v.sha256 AS source_sha256,ro.run_id AS source_run_id
                 FROM run_observations ro JOIN observations o ON o.project_id=ro.project_id AND o.id=ro.observation_id
                 JOIN occurrences c ON c.project_id=o.project_id AND c.id=o.occurrence_id
                 JOIN artifact_versions v ON v.project_id=c.project_id AND v.id=c.artifact_version_id
-                WHERE ro.project_id=? AND ro.run_id=? ORDER BY ro.observation_id LIMIT ? OFFSET ?""",
-                (project, run_id, remaining - processed, ci)).fetchall()
+                WHERE ro.project_id=? AND ro.run_id=? AND ro.observation_id>=?
+                AND o.identifier IN ({marks}) ORDER BY ro.observation_id LIMIT ?""",
+                (project, run_id, start[0], *identifiers, budget)).fetchall()
             if not rows:
-                raise ValueError("Published run membership did not resolve to observations")
+                offset = (qi + 1) * size
+                continue
             matches += sum(_process_pair(db, project, question, row, DEFAULT_RULE_VERSION) for row in rows)
-            offset += len(rows)
+            # Keep the persisted cursor in the original full-membership ordinal
+            # space, including jobs begun before identifier-prefiltered paging.
+            rank = db.execute("""SELECT COUNT(*) FROM run_observations
+                WHERE project_id=? AND run_id=? AND observation_id<=?""",
+                (project, run_id, rows[-1]['id'])).fetchone()[0]
+            offset = (qi + 1) * size if len(rows) < budget else qi * size + rank
             processed += len(rows)
         done = offset >= total
         db.execute("UPDATE research_outbox SET fanout_offset=?,state=?,attempt_count=attempt_count+1,last_error=NULL WHERE id=?",
