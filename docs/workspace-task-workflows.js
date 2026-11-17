@@ -221,7 +221,63 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   link.onclick=event=>{const current=session.state();if(current.draft||current.pendingBody||current.busy){event.preventDefault();error='Save or discard the current task draft before following a link. Retry an uncertain request before leaving.';notice(error,'error');render(current);}};
   return link;
  }
+ function variableLookup(parent,state,context){
+  const names=new Set((context.reconstruction_sources||[]).flatMap(s=>(s.variables||[]).map(v=>v.name)));
+  for(const event of context.history||[]){
+   const text=event.details?.text;
+   if(typeof text!=='string'||!(/^(Audit index|Reconstruction) v1\n/.test(text)))continue;
+   try{
+    const vars=JSON.parse(text.slice(text.indexOf('\n')+1)).variables||{};
+    for(const name of Array.isArray(vars)?vars:Object.keys(vars))if(typeof name==='string')names.add(name);
+   }catch{/* Historical free-text notes may lack structured variable names. */}
+  }
+  const group=node('section'),form=node('form'),field=node('input'),results=node('div');
+  field.placeholder='Variable name';field.setAttribute('aria-label','Variable name');field.maxLength=200;
+  const submit=node('button','Find references');submit.type='submit';
+  form.append(field,submit);
+  group.append(node('h4','Variable references across this project'),form);
+  let generation=0;
+  async function search(query,cursor=null){
+   if(!query)return;
+   const request=++generation;
+   if(!cursor)results.replaceChildren();
+   const status=node('p','Searching…');results.append(status);
+   try{
+    const params=new URLSearchParams({project_id:state.projectId,q:query,limit:'25'});
+    if(cursor)params.set('cursor',cursor);
+    const response=await fetch('/v1/variable-nodes?'+params);
+    const data=await response.json();
+    if(request!==generation)return;
+    if(!response.ok)throw Error(data.error||'Variable lookup failed');
+    status.remove();
+    if(!cursor)results.append(node('p',data.coverage.exact_count+' exact · '+data.coverage.similar_count+' related candidates'));
+    for(const item of data.items){
+     const row=node('article'),label=item.task_title||item.title||item.scope?.title||item.task_uuid;
+     row.append(node('strong',(item.match_names||[]).slice(0,4).join(', ')||query),
+                node('p',item.match_class+' · '+item.node_type));
+     if(item.task_uuid)row.append(taskLink(label,state,item.task_uuid));
+     for(const id of item.linked_task_uuids||[]){
+      if(id!==item.task_uuid)row.append(taskLink(item.linked_task_labels?.find(label=>label.task_uuid===id)?.title||id,state,id));
+     }
+     const loc=item.source_locator;
+     if(loc)row.append(node('small',Array.isArray(loc)?loc.join(', '):
+      [loc.path,typeof loc.locator==='string'?loc.locator:JSON.stringify(loc.locator)].filter(Boolean).join(' · ')));
+     results.append(row);
+    }
+    if(data.next_cursor){
+     const more=node('button','More references');more.type='button';
+     more.onclick=()=>{more.remove();search(query,data.next_cursor);};results.append(more);
+    }
+   }catch(e){if(request===generation)status.textContent=e.message;}
+  }
+  form.onsubmit=e=>{e.preventDefault();search(field.value.trim());};
+  for(const name of names){
+   const chip=node('button',name);chip.type='button';chip.onclick=()=>{field.value=name;search(name);};group.append(chip);
+  }
+  group.append(results);parent.append(group);
+ }
  function overview(parent,state,context){
+  variableLookup(parent,state,context);
   const task=context.task;parent.append(node('h4','Overview'),node('p',task.summary||context.fields?.summary||'No task summary recorded.'));
   parent.append(node('p','Workflow status: '+(task.status||'not reported')+' · own acceptance: '+(context.acceptance_state||'unknown')));
   parent.append(node('p','Declared scope: '+(task.decomposition_complete===undefined?'not reported':task.decomposition_complete?'complete':'incomplete')+' · Area: '+(task.area_id===undefined?'not reported':task.area_id||'unassigned')));

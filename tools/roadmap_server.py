@@ -471,6 +471,19 @@ class Handler(BaseHTTPRequestHandler):
             self._check_origin()
             if parsed.path == '/v1/service-info' and not parsed.query:
                 self._json(200, {'api_version': 'research-workspace/v1', 'shared_mode': self._shared()})
+            elif parsed.path == '/v1/variable-nodes':
+                if self._shared():
+                    raise RoadmapError(403, 'Variable search uses local project evidence')
+                params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+                if (set(params) - {'project_id','q','cursor','limit'} or not {'project_id','q'} <= set(params)
+                        or any(len(v) != 1 for v in params.values()) or not 1 <= len(params['q'][0].strip()) <= 200):
+                    raise RoadmapError(400, 'Supply one project and a variable name (1–200 characters)')
+                limit = params.get('limit',['50'])[0]
+                if not limit.isdecimal() or len(limit)>3 or not 1 <= int(limit) <= 100:
+                    raise RoadmapError(400,'Page size must be 1–100')
+                from workspace_variable_nodes import lookup_variable_nodes
+                self._json(200,lookup_variable_nodes(_store(),params['project_id'][0],params['q'][0].strip(),
+                           limit=int(limit),cursor=params.get('cursor',[None])[0]))
             elif self._shared() and parsed.path.startswith('/api/'):
                 raise RoadmapError(403, 'Legacy API is unavailable in shared mode')
             elif self._shared() and parsed.path.startswith('/repo/'):
