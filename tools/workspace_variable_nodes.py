@@ -146,8 +146,16 @@ def lookup_variable_nodes(store, project, query, *, limit=50, cursor=None):
                 for prefix in ("Audit index v1\n", "Reconstruction v1\n"):
                     if text.startswith(prefix):
                         try:
-                            names = json.loads(text[len(prefix):]).get("variables", {})
+                            reference = json.loads(text[len(prefix):])
+                            names = reference.get("variables", {})
                             variables = names if isinstance(names, list) else list(names) if isinstance(names, dict) else []
+                            source = reference.get("source")
+                            locator = reference.get("locator")
+                            if isinstance(source, str) and source.strip():
+                                location = source
+                                if isinstance(locator, str) and locator.strip():
+                                    location += " @ " + locator
+                                locators = sorted(set(locators + [location]))
                         except (ValueError, TypeError, AttributeError):
                             variables = []
                         break

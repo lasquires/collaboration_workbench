@@ -192,4 +192,17 @@ class SourceIndexTests(unittest.TestCase):
         bad['id']=exchange.research.digest({k:v for k,v in bad.items() if k!='id'})
         with self.assertRaisesRegex(StoreError,'provenance'):self.store.exchange_preview(self.project,bundle=bad)
 
+    def test_journal_variable_reference_preserves_binary_locator(self):
+        from tools.workspace_variable_nodes import lookup_variable_nodes
+        self.write(dict(op="create",alias="score-color",record={"title":"Score color","status":"ready"}))
+        task=self.store.read_v1("context",self.project,key="score-color")["context"]["task"]["id"]
+        reference={"variables":["modifier"],"source":"recovered/apk/lib/armeabi-v7a/libgame.so",
+                   "locator":"0x3ffb5c","claim":"Controlled original color method"}
+        self.write(dict(op="journal",task_id=task,kind="observation",
+                        text="Reconstruction v1\n"+json.dumps(reference)))
+        hits=lookup_variable_nodes(self.store,self.project,"modifier")["items"]
+        hit=next(item for item in hits if item["node_type"]=="task_variable_reference")
+        self.assertIn(reference["source"]+" @ "+reference["locator"],hit["source_locator"])
+        self.assertIn("lead",hit["provenance"])
+
 if __name__=='__main__':unittest.main()

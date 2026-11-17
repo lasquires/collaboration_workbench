@@ -36,6 +36,16 @@ class MatcherTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT state FROM hint_decisions WHERE hint_id=?',(old['id'],)).fetchone()[0],'dismissed')
             self.assertIsNotNone(db.execute('SELECT carried_from_id FROM hint_decisions WHERE hint_id=?',(successor['id'],)).fetchone()[0])
 
+    def test_unhandled_outbox_event_is_acknowledged(self):
+        from tools.roadmap_matcher import _process_event_page
+        self.question()
+        with self.store._connection() as db:
+            event=dict(db.execute("SELECT * FROM research_outbox ORDER BY event_sequence DESC LIMIT 1").fetchone())
+            event_id=event["id"]
+            event["kind"]="non_matching_metadata"
+            self.assertEqual(_process_event_page(db,self.project,event,1),(0,0,True))
+            self.assertEqual(db.execute("SELECT state FROM research_outbox WHERE id=?",(event_id,)).fetchone()[0],"done")
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -174,6 +184,19 @@ class MatcherTests(unittest.TestCase):
         self.assertEqual(result["processed_pairs"], 1)
         self.assertEqual(result["pending_outbox"], 0)
         self.assertEqual(result["new_hints"], 1)
+
+    def test_sparse_watch_resumes_legacy_offset_without_duplicate_hints(self):
+        version=self.source()
+        self.publish(version,identifier="position",member="other")
+        self.publish(version)
+        self.process()
+        self.question()
+        with self.store._connection() as db:
+            db.execute("UPDATE research_outbox SET fanout_offset=1 WHERE kind='create_question' AND state='pending'")
+        result=self.process(limit=1)
+        self.assertEqual(result["pending_outbox"],0)
+        self.assertEqual(result["new_hints"],1)
+        self.assertEqual(self.process()["new_hints"],0)
 
     def test_scope_isolation_empty_criteria_and_membership_scoped_inbox(self):
         version = self.source(); self.question({"any_of": [{"identifier": "speed", "namespace": "objc-field", "scope_key": "Other"}]})

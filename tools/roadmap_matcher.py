@@ -166,11 +166,18 @@ def _candidate(row: sqlite3.Row) -> dict:
 
 
 def _observation_count(db, project: str, *, run_id: str | None = None) -> int:
-    sql = "SELECT count(DISTINCT o.id) FROM observations o JOIN occurrences c ON c.project_id=o.project_id AND c.id=o.occurrence_id JOIN artifact_versions v ON v.project_id=c.project_id AND v.id=c.artifact_version_id JOIN run_observations ro ON ro.project_id=o.project_id AND ro.observation_id=o.id JOIN index_runs r ON r.project_id=ro.project_id AND r.id=ro.run_id WHERE o.project_id=? AND r.state='published'"
+    sql = """SELECT count(*) FROM observations o WHERE o.project_id=? AND EXISTS (
+        SELECT 1 FROM run_observations ro
+        JOIN index_runs r ON r.project_id=ro.project_id AND r.id=ro.run_id
+        WHERE ro.project_id=o.project_id AND ro.observation_id=o.id
+          AND r.state='published'"""
     args: list[Any] = [project]
     if run_id is not None:
-        sql += " AND r.id=?"; args.append(run_id)
+        sql += " AND r.id=?"
+        args.append(run_id)
+    sql += ")"
     return db.execute(sql, args).fetchone()[0]
+
 
 
 def _page_cached(cache: dict | None, key: tuple, load):
@@ -183,11 +190,38 @@ def _page_cached(cache: dict | None, key: tuple, load):
 
 
 def _observation_at(db, project: str, offset: int, *, run_id: str | None = None) -> sqlite3.Row | None:
-    sql = "SELECT o.*,c.artifact_version_id,c.namespace,c.scope_key,c.locator_key,v.binary_build_id,v.sha256 AS source_sha256,MIN(r.id) AS source_run_id FROM observations o JOIN occurrences c ON c.project_id=o.project_id AND c.id=o.occurrence_id JOIN artifact_versions v ON v.project_id=c.project_id AND v.id=c.artifact_version_id JOIN run_observations ro ON ro.project_id=o.project_id AND ro.observation_id=o.id JOIN index_runs r ON r.project_id=ro.project_id AND r.id=ro.run_id WHERE o.project_id=? AND r.state='published'"
-    args: list[Any] = [project]
+    membership = "SELECT MIN(r.id) FROM run_observations ro JOIN index_runs r ON r.project_id=ro.project_id AND r.id=ro.run_id WHERE ro.project_id=o.project_id AND ro.observation_id=o.id AND r.state='published'"
+    args: list[Any] = []
     if run_id is not None:
-        sql += " AND r.id=?"; args.append(run_id)
-    sql += " GROUP BY o.id ORDER BY o.id LIMIT 1 OFFSET ?"; args.append(offset)
+        membership += " AND r.id=?"
+        args.append(run_id)
+    run_filter = " AND r.id=?" if run_id is not None else ""
+    args = [project]
+    if run_id is not None:
+        args.append(run_id)
+    args.extend([offset, project])
+    if run_id is not None:
+        args.append(run_id)
+    sql = """
+        WITH selected AS (
+            SELECT o.* FROM observations o
+            WHERE o.project_id=? AND EXISTS (
+                SELECT 1 FROM run_observations ro
+                JOIN index_runs r ON r.project_id=ro.project_id AND r.id=ro.run_id
+                WHERE ro.project_id=o.project_id AND ro.observation_id=o.id
+                  AND r.state='published'""" + run_filter + """
+            ) ORDER BY o.id LIMIT 1 OFFSET ?
+        )
+        SELECT o.*,c.artifact_version_id,c.namespace,c.scope_key,c.locator_key,
+               v.binary_build_id,v.sha256 AS source_sha256,
+               (SELECT MIN(r.id) FROM run_observations ro
+                JOIN index_runs r ON r.project_id=ro.project_id AND r.id=ro.run_id
+                WHERE ro.project_id=? AND ro.observation_id=o.id
+                  AND r.state='published'""" + run_filter + """) AS source_run_id
+        FROM selected o
+        JOIN occurrences c ON c.project_id=o.project_id AND c.id=o.occurrence_id
+        JOIN artifact_versions v ON v.project_id=c.project_id AND v.id=c.artifact_version_id
+    """
     return db.execute(sql, args).fetchone()
 
 
@@ -397,6 +431,7 @@ def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) ->
     elif event["kind"] == "publish_finding":
         finding_revision_id = payload.get("id")
     elif event["kind"] not in ("create_question", "revise_question"):
+        db.execute("UPDATE research_outbox SET state='done',attempt_count=attempt_count+1,last_error=NULL WHERE id=?", (event["id"],))
         return 0, 0, True
     qcount = _question_count(db, project, question_id=question_id, cache=page_cache)
     if run_id:
@@ -431,7 +466,9 @@ def _process_event_page(db, project: str, event: sqlite3.Row, remaining: int) ->
     # A scoped watch on a large existing index usually names very few observations.
     # Finish such a watch in one page. For larger sets keep the original durable
     # cursor ordering, including any pages started by an earlier service version.
-    if question_id and qcount and event["fanout_offset"] == 0:
+    # A partially processed legacy page may restart from the sparse candidates.
+    # Match identity deduplication preserves existing hints and notifications.
+    if question_id and qcount:
         question = _question_at(db, project, 0, question_id=question_id, cache=page_cache)
         groups = json.loads(question["criteria_json"])["any_of"]
         identifiers = sorted({group["identifier"] for group in groups})
