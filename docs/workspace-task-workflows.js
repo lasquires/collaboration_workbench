@@ -276,8 +276,91 @@ function create({api,getContext,onDirty=()=>{},notice=()=>{},mount=null,storage,
   }
   group.append(results);parent.append(group);
  }
+ function reconstruction(parent,state,context){
+  const marker='Reconstruction v1\n';
+  const entry=(context.history||[]).find(event=>event.details?.text?.startsWith(marker));
+  let card;
+  try{if(entry)card=JSON.parse(entry.details.text.slice(marker.length));}catch{}
+  const section=node('article');section.className='card';
+  section.append(node('h4','Reconstructed code so far'));
+  const codePane=(heading,value)=>{
+   const pane=node('article');pane.className='code-comparison-pane';pane.append(node('h5',heading));
+   if(value?.source||value?.locator||value?.source_sha256){
+    pane.append(node('small',[value.source,value.locator,value.source_sha256&&('SHA-256 '+value.source_sha256)].filter(Boolean).join(' · ')));
+   }
+   const pre=node('pre');pre.style.whiteSpace='pre-wrap';pre.append(node('code',String(value?.code||'No code recorded.')));pane.append(pre);return pane;
+  };
+  if(card && Array.isArray(card.sections)){
+   for(const item of card.sections){
+    if(!item||typeof item!=='object')continue;
+    const pair=node('section');pair.className='code-comparison';pair.append(node('h4',item.title||'Code section'));
+    const panes=node('div');panes.className='code-comparison-panes';
+    panes.append(codePane(item.original?.label||'Original instructions',item.original),
+     codePane(item.reconstruction?.label||'Reconstructed source',item.reconstruction));pair.append(panes);
+    if(item.period_hypothesis)pair.append(node('h5','Period-appropriate hypothesis'),node('p',String(item.period_hypothesis)));
+    if(item.comparison){
+     pair.append(node('h5','Differential boundary'),node('p',[
+      item.comparison.status,item.comparison.scope,item.comparison.result,item.comparison.tolerance
+     ].filter(Boolean).map(String).join(' · ')));
+    }
+    const missing=Array.isArray(item.missing)?item.missing:[];
+    if(missing.length){pair.append(node('h5','Missing variables / future watches'));
+     for(const gap of missing)pair.append(node('p',typeof gap==='string'?gap:[gap.identifier,gap.question,gap.unblocks].filter(Boolean).join(' · ')));
+    }
+    section.append(pair);
+   }
+  }
+  if(card && typeof card.code==='string'){
+   section.append(node('p',card.purpose),node('strong',card.kind));
+   const pre=node('pre');pre.style.whiteSpace='pre-wrap';pre.append(node('code',card.code));section.append(pre);
+   section.append(node('h4','Variables'));const variables=node('dl');
+   for(const [name,meaning] of Object.entries(card.variables||{}))variables.append(node('dt',name),node('dd',String(meaning)));
+   section.append(variables,node('h4','Supporting evidence'),node('p',card.support));
+   for(const source of card.sources||[]){
+    if(typeof source.url!=='string'||!source.url.startsWith('https://'))continue;
+    const link=node('a',source.label);link.href=source.url;link.target='_blank';link.rel='noopener noreferrer';
+    const line=node('p');line.append(link);section.append(line);
+   }
+   section.append(node('h4','Still missing'),node('p',card.missing));
+  }
+  const sources=context.reconstruction_sources||[];
+  const chunks=sources.flatMap(s=>s.snippets),variables=sources.flatMap(s=>s.variables);
+  const reports=sources.flatMap(s=>s.reports),mappings=sources.flatMap(s=>s.mappings);
+  for(const chunk of chunks){
+   section.append(node('strong',chunk.kind+' · '+chunk.source));
+   const pre=node('pre');pre.style.whiteSpace='pre-wrap';pre.append(node('code',chunk.code));section.append(pre);
+  }
+  if(!chunks.length&&!card)section.append(node('p','No code excerpt linked to this task yet.'));
+  if(variables.length){section.append(node('h4','Recorded variables'));for(const v of variables)section.append(node('strong',v.name),node('p',v.meaning),node('small',v.scope));}
+  if(!card&&!variables.length)section.append(node('p','No variable definitions linked yet.'));
+  section.append(node('h4','Evidence on record'));
+  if(context.indexed_behaviors?.length){
+   section.append(node('h4','Behaviors indexed by this report'));
+   for(const behavior of context.indexed_behaviors){const line=node('p');line.append(taskLink(behavior.title,state,behavior.id));section.append(line);}
+  }
+  for(const audit of context.linked_audits||[]){
+   const record=node('article');record.append(taskLink(audit.title,state,audit.id),node('p',audit.reason));
+   section.append(record);
+  }
+  for(const report of reports)section.append(node('strong',report.path),node('p',report.summary));
+  for(const m of mappings){
+   const details=node('details');details.append(node('summary',m.id+' · '+m.status),node('p',m.scope||''),node('p',String(m.evidence||'')));
+   if(m.implementation)details.append(node('code',String(m.implementation)));section.append(details);
+  }
+  const paths=(context.fields?.evidence||[]).filter(p=>!reports.some(r=>r.path===p));
+  for(const path of paths)section.append(node('p',String(path)));
+  if(!reports.length&&!mappings.length&&!paths.length&&!context.linked_audits?.length&&!card)section.append(node('p','No supporting source linked yet.'));
+  const gaps=new Set([...reports.map(r=>r.gap),...mappings.flatMap(m=>m.openQuestions||[]),context.fields?.next_step].filter(Boolean));
+  if(gaps.size||!card){section.append(node('h4','Still missing'));for(const gap of gaps)section.append(node('p',String(gap)));
+   if(!gaps.size)section.append(node('p','No explicit open question recorded. See subtasks and acceptance criteria for the remaining scope.'));
+  }
+  const ancestor=context.ancestors?.[0];
+  if(ancestor)section.append(taskLink('Open parent · '+(ancestor.title||ancestor.alias||'Parent task'),state,ancestor.id));
+  parent.append(section);
+ }
  function overview(parent,state,context){
   variableLookup(parent,state,context);
+  reconstruction(parent,state,context);
   const task=context.task;parent.append(node('h4','Overview'),node('p',task.summary||context.fields?.summary||'No task summary recorded.'));
   parent.append(node('p','Workflow status: '+(task.status||'not reported')+' · own acceptance: '+(context.acceptance_state||'unknown')));
   parent.append(node('p','Declared scope: '+(task.decomposition_complete===undefined?'not reported':task.decomposition_complete?'complete':'incomplete')+' · Area: '+(task.area_id===undefined?'not reported':task.area_id||'unassigned')));
